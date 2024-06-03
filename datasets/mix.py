@@ -245,7 +245,7 @@ def build(image_set, args):
     assert root.exists(), f'provided MOT path {root} does not exist'
     mode = 'instances'
     PATHS = {
-        "train": (root, root / "annotations" / 'train.json'),
+        "train": (root, root / "annotations" / 'train_half.json'),
         "trainall": (root, root / "annotations" / 'train.json'),
         "val": (root / 'mot_train', root / "annotations" / 'val_half.json'),
         "test": (root / 'mot_train', root / "annotations" / 'test.json'),

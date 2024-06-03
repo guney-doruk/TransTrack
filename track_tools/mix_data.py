@@ -12,7 +12,7 @@ ln -s ../crowdhuman/CrowdHuman_train crowdhuman_train
 cd ..
 """
 
-mot_json = json.load(open('mot/annotations/train.json','r'))
+mot_json = json.load(open('/home/arslan/Desktop/master/datasets/mot17/annotations/train_half.json','r'))
 
 img_list = list()
 for img in mot_json['images']:
@@ -33,7 +33,7 @@ max_img = 10000
 max_ann = 2000000
 max_video = 10
 
-crowdhuman_json = json.load(open('crowdhuman/annotations/train.json','r'))
+crowdhuman_json = json.load(open('/home/arslan/Desktop/master/datasets/crowdhuman/annotations/train.json','r'))
 img_id_count = 0
 for img in crowdhuman_json['images']:
     img_id_count += 1
@@ -59,4 +59,4 @@ mix_json['images'] = img_list
 mix_json['annotations'] = ann_list
 mix_json['videos'] = video_list
 mix_json['categories'] = category_list
-json.dump(mix_json, open('mix/annotations/train.json','w'))
+json.dump(mix_json, open('/home/arslan/Desktop/master/datasets/mix_half/annotations/train.json','w'))

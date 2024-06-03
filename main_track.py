@@ -12,6 +12,7 @@ import datetime
 import json
 import random
 import time
+import wandb
 from pathlib import Path
 
 import numpy as np
@@ -153,6 +154,10 @@ def get_args_parser():
 
 
 def main(args):
+    wandb.init(
+        project="TransTrack",
+        config=args
+    )
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
 
@@ -383,6 +388,8 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    ## NOTE: related with wandbAI 
+    wandb.finish()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Deformable DETR training and evaluation script', parents=[get_args_parser()])

@@ -1,0 +1,23 @@
+connect from remina
+    - export LD_LIBRARY_PATH=/home/arslan/.conda/envs/transTrackVenv/lib/python3.7/site-packages/torch/lib:$LD_LIBRARY_PATH
+
+crowdhuman_mot_train.sh
+    - CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.0000250 --lr_backbone 0.00000250 --output_dir /home/arslan/Desktop/master/TransTrack/output/finetune/deneme --dataset_file mot --coco_path /home/arslan/Desktop/master/datasets/mot17 --batch_size 1 --resume /home/arslan/Desktop/master/TransTrack/pretrained/crowdhuman_final.pth  --with_box_refine  --num_queries 500 --track_train_split trainall  --epochs 20 --lr_drop 10
+
+crowdhuman_train.sh
+    - CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=3 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.0000125 --lr_backbone 0.00000125 --output_dir /home/arslan/Desktop/master/TransTrack/output/output_crowdhuman_reducedLR --dataset_file crowdhuman --coco_path /home/arslan/Desktop/master/datasets/crowdhuman --batch_size 1 --with_box_refine --num_queries 500 --epochs 150 --lr_drop 100
+
+mot_test.sh
+    - python3 main_track.py  --output_dir /home/arslan/Desktop/master/TransTrack/output/finetune/[mot17] dummy --dataset_file mot --coco_path /home/arslan/Desktop/master/datasets/mot17 --batch_size 1 --resume /home/arslan/Desktop/master/TransTrack/output/finetune/[crowdhuman_final.pth from TransTrack] mot17/checkpoint0019.pth --track_eval_split test --eval --with_box_refine --num_queries 500
+
+mot_val.sh
+    - python3 main_track.py  --output_dir /home/arslan/Desktop/master/TransTrack/output/train/crowdhuman_pretrained --dataset_file mot --coco_path /home/arslan/Desktop/master/datasets/mot17 --batch_size 1 --resume /home/arslan/Desktop/master/TransTrack/pretrained/crowdhuman_final.pth --eval --with_box_refine --num_queries 500
+
+crowdhuman_mot_trainhalf.sh
+    - CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1,3 python3 -m torch.distributed.launch --nproc_per_node=2 --use_env main_track.py --lr 0.0000250 --lr_backbone 0.00000250 --output_dir /home/arslan/Desktop/master/TransTrack/output/finetune/crowdhuman_mot_trainhalf --dataset_file mot --coco_path /home/arslan/Desktop/master/datasets/mot17 --batch_size 1  --with_box_refine  --num_queries 500 --resume /home/arslan/Desktop/master/TransTrack/pretrained/crowdhuman_final.pth --epochs 20 --lr_drop 10
+
+crowdhuman_plus_mot_train.sh
+    - CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1,3 python3 -m torch.distributed.launch --nproc_per_node=2 --use_env main_track.py --lr 0.0000250 --lr_backbone 0.00000250 --output_dir home/arslan/Desktop/master/TransTrack/output/finetune/crowdhuman_plus_mot_train --dataset_file mix --coco_path /home/arslan/Desktop/master/datasets/mix --batch_size 1 --resume /home/arslan/Desktop/master/TransTrack/pretrained/crowdhuman_final.pth --with_box_refine --num_queries 500  --epochs 20 --lr_drop 10
+
+crowdhuman_mot_trainhalf.sh -> MOT17 half + Crowdhuman Train
+    - CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=3 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.0000125 --lr_backbone 0.00000125 --output_dir /home/arslan/Desktop/master/TransTrack/output/finetune/crowdhuman_plus_mot_trainhalf --dataset_file mix --coco_path /home/arslan/Desktop/master/datasets/mix_half --batch_size 1  --with_box_refine  --num_queries 500 --resume /home/arslan/Desktop/master/TransTrack/pretrained/crowdhuman_final.pth --epochs 20 --lr_drop 10

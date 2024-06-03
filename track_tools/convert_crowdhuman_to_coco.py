@@ -8,7 +8,7 @@ import numpy as np
 import json
 from PIL import Image
 
-DATA_PATH = 'crowdhuman/'
+DATA_PATH = '/home/arslan/Desktop/master/datasets/crowdhuman/'
 OUT_PATH = DATA_PATH + 'annotations/'
 SPLITS = ['val', 'train']
 DEBUG = False

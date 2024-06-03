@@ -3,7 +3,7 @@ import sys
 import json
 import cv2
 import glob as gb
-from track_tools.colormap import colormap
+from colormap import colormap
 
 
 def txt2img(visual_path="visual_val_gt"):
@@ -16,8 +16,8 @@ def txt2img(visual_path="visual_val_gt"):
         os.makedirs(visual_path)
     color_list = colormap()
 
-    gt_json_path = 'mot/annotations/val_half.json'
-    img_path = 'mot/train/'
+    gt_json_path = '/home/arslan/Desktop/master/datasets/mot17/annotations/val_half.json'
+    img_path = '/home/arslan/Desktop/master/datasets/mot17/train/'
     show_video_names = ['MOT17-02-FRCNN', 
                     'MOT17-04-FRCNN',
                     'MOT17-05-FRCNN',
@@ -27,8 +27,8 @@ def txt2img(visual_path="visual_val_gt"):
                     'MOT17-13-FRCNN']
 
 
-    test_json_path = 'mot/annotations/test.json'
-    test_img_path = 'mot/test/'
+    test_json_path = '/home/arslan/Desktop/master/datasets/mot17/annotations/test.json'
+    test_img_path = '/home/arslan/Desktop/master/datasets/mot17/test/'
     test_show_video_names = ['MOT17-01-FRCNN', 
                     'MOT17-03-FRCNN',
                     'MOT17-06-FRCNN',
@@ -44,11 +44,11 @@ def txt2img(visual_path="visual_val_gt"):
         img_dict = dict()
         
         if visual_path == "visual_val_gt":
-            txt_path = 'mot/train/' + show_video_name + '/gt/gt_val_half.txt'
+            txt_path = '/home/arslan/Desktop/master/datasets/mot17/train/' + show_video_name + '/gt/gt_val_half.txt'
         elif visual_path == "visual_val_predict":
-            txt_path = 'val/tracks/'+ show_video_name + '.txt'
+            txt_path = './output/train/output_crowdhuman_reducedLR/validation/val/tracks/'+ show_video_name + '.txt'
         elif visual_path == "visual_test_predict":
-            txt_path = 'test/tracks/'+ show_video_name + '.txt'
+            txt_path = './output/finetune/output_crowdhuman_reducedLR_onlyMOT_2GPU/test/tracks/'+ show_video_name + '.txt'
         else:
             raise NotImplementedError
         
@@ -114,7 +114,7 @@ def img2video(visual_path="visual_val_gt"):
 
 
 if __name__ == '__main__':
-    visual_path="visual_val_predict"
+    visual_path="visual_test_predict"
     if len(sys.argv) > 1:
         visual_path =sys.argv[1]
     txt2img(visual_path)
