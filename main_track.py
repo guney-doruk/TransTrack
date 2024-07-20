@@ -12,7 +12,7 @@ import datetime
 import json
 import random
 import time
-import wandb
+# import wandb
 from pathlib import Path
 
 import numpy as np
@@ -44,7 +44,7 @@ def get_args_parser():
     parser.add_argument('--lr_drop', default=40, type=int)
     parser.add_argument('--lr_drop_epochs', default=None, type=int, nargs='+')
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
-                        help='gradient clipping max norm')
+                        help='gradient clipping max norm') #NOTE: ne oldugunu bilmiyoruz...
 
     parser.add_argument('--sgd', action='store_true')
 
@@ -88,6 +88,9 @@ def get_args_parser():
     # * Segmentation
     parser.add_argument('--masks', action='store_true',
                         help="Train segmentation head if the flag is provided")
+    ## NOTE: args.forzen_weights does the same operation, therefore commented out.
+    # parser.add_argument('--segm_head_only', action='store_true',
+    #                    help='Use it if you want to train only the segmentation head and others froze.')
 
     # Loss
     parser.add_argument('--no_aux_loss', dest='aux_loss', action='store_false',
@@ -154,10 +157,10 @@ def get_args_parser():
 
 
 def main(args):
-    wandb.init(
-        project="TransTrack",
-        config=args
-    )
+    # wandb.init(
+    #    project="TransTrack",
+    #    config=args
+    # )
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
 
@@ -389,7 +392,7 @@ def main(args):
     print('Training time {}'.format(total_time_str))
 
     ## NOTE: related with wandbAI 
-    wandb.finish()
+    # wandb.finish()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Deformable DETR training and evaluation script', parents=[get_args_parser()])

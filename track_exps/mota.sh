@@ -2,7 +2,7 @@
 
 
 GROUNDTRUTH=/home/arslan/Desktop/master/datasets/mot17/train
-RESULTS=/home/arslan/Desktop/master/TransTrack/output/train/crowdhuman_pretrained/val/tracks
+RESULTS=/home/arslan/Desktop/master/TransTrack/output/finetune/crowdhuman_plus_mot_trainhalf/val/tracks/
 GT_TYPE=_val_half
 THRESHOLD=-1
 

@@ -156,7 +156,7 @@ class DeformableDETR(nn.Module):
             pre_samples, pre_targets = self.randshift(samples, targets)
             prepre_samples, _ = self.randshift(samples, targets)
 
-            pre_out, pre_embed = self.forward_once(pre_samples, prepre_samples, pre_targets, targets)             
+            pre_out, pre_embed = self.forward_once(pre_samples, prepre_samples, pre_targets, targets) # NOTE: forward once racker trafında onceki çıktıları vs alabilmek için her seferince çalıştırdığı bir yapı. Tracker tarafı hiç bir şekilde çalışmıyor bu run'da...           
             
             if torch.randn(1).item() > 0.0:
                 out, _ = self.forward_train(samples, pre_embed)     
@@ -300,7 +300,7 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight        
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, _ = self.transformer(srcs, masks, pos, query_embeds, pre_reference, pre_tgt)           
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, _ = self.transformer(srcs, masks, pos, query_embeds, pre_reference, pre_tgt) # NOTE: Buradaki _ bizim memory burayı almamız lazım...    
             
         outputs_classes = []
         outputs_coords = []

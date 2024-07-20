@@ -145,11 +145,11 @@ class DeformableTransformer(nn.Module):
             lvl_pos_embed_flatten.append(lvl_pos_embed)
             src_flatten.append(src)
             mask_flatten.append(mask)
-        src_flatten = torch.cat(src_flatten, 1)
+        src_flatten = torch.cat(src_flatten, 1) # NOTE: shape: 2, 18088, 256, flatten version of the all level features together...
         mask_flatten = torch.cat(mask_flatten, 1)
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
-        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
+        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1) # NOTE: shape 2, 4, 2. not so important, basically its isthe height and widts padded ratio correspond to the non padded(original one)... 
 
         # encoder
         if memory is None:
@@ -205,8 +205,7 @@ class DeformableTransformer(nn.Module):
         if self.two_stage and self.training:
             return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, memory
         
-        return hs, init_reference_out, inter_references_out, None, None, memory
-
+        return hs, init_reference_out, inter_references_out, None, None, memory # NOTE: Buraya tgt eklersen query'i de almış olursun...
 
 class DeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,
