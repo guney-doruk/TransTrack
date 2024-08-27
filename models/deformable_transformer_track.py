@@ -164,14 +164,20 @@ class DeformableTransformer(nn.Module):
                 # hack implementation for two-stage Deformable DETR
                 enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
                 enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
-                
-            tgt = pre_tgt
+
+            #NOTE: To avoid name confiliction with track query we changed the name from tgt to tgt_pre
+            tgt_pre = pre_tgt 
             reference_points = pre_reference
             init_reference_out = reference_points
 
+            #NOTE: In order to work segmentation head either tracking or detection decoder works we need object query(tgt) like in detection decoder input. Therefore below 3 line added.
+            query_embed, tgt = torch.split(query_embed, c, dim=1)
+            query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
+            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
+
             query_embed = None
             # decoder
-            hs, inter_references = self.decoder_track(tgt, reference_points, memory,
+            hs, inter_references = self.decoder_track(tgt_pre, reference_points, memory,
                                                       spatial_shapes, valid_ratios, query_embed, mask_flatten)
             inter_references_out = inter_references
         else:
@@ -203,9 +209,9 @@ class DeformableTransformer(nn.Module):
             inter_references_out = inter_references
         
         if self.two_stage and self.training:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, memory
+            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, memory, tgt
         
-        return hs, init_reference_out, inter_references_out, None, None, memory # NOTE: Buraya tgt eklersen query'i de almış olursun...
+        return hs, init_reference_out, inter_references_out, None, None, memory, tgt # NOTE: Buraya tgt eklersen query'i de almış olursun...
 
 class DeformableTransformerEncoderLayer(nn.Module):
     def __init__(self,

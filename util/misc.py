@@ -5,6 +5,7 @@ Mostly copy-paste from torchvision references.
 """
 import os
 import subprocess
+from packaging import version
 import time
 from collections import defaultdict, deque
 import datetime

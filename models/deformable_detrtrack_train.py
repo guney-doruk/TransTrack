@@ -22,7 +22,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 from .backbone import build_backbone
 from .matcher import build_matcher
-from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
+from .segmentation_detr import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer_track import build_deforamble_transformer
 import copy
@@ -212,7 +212,7 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, memory = self.transformer(srcs, masks, pos, query_embeds)
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, memory, _ = self.transformer(srcs, masks, pos, query_embeds)
 
         outputs_classes = []
         outputs_coords = []
@@ -300,7 +300,7 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight        
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, _ = self.transformer(srcs, masks, pos, query_embeds, pre_reference, pre_tgt) # NOTE: Buradaki _ bizim memory burayı almamız lazım...    
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, _, _ = self.transformer(srcs, masks, pos, query_embeds, pre_reference, pre_tgt) # NOTE: Buradaki _ bizim memory burayı almamız lazım...    
             
         outputs_classes = []
         outputs_coords = []
@@ -441,6 +441,7 @@ class SetCriterion(nn.Module):
         target_masks = target_masks.to(src_masks)
 
         src_masks = src_masks[src_idx]
+
         # upsample predictions to the target size
         src_masks = interpolate(src_masks[:, None], size=target_masks.shape[-2:],
                                 mode="bilinear", align_corners=False)
