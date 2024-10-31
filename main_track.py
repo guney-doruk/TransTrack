@@ -12,7 +12,7 @@ import datetime
 import json
 import random
 import time
-# import wandb
+import wandb
 from pathlib import Path
 
 import numpy as np
@@ -157,10 +157,10 @@ def get_args_parser():
 
 
 def main(args):
-    # wandb.init(
-    #    project="TransTrack",
-    #    config=args
-    # )
+    wandb.init(
+       project="TransTrack",
+       config=args
+    )
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
 
@@ -176,7 +176,8 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
     
-    scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
+    # scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
+    scaler = torch.GradScaler(device="cuda", enabled=args.fp16)
     if args.det_val:
         assert args.eval, 'only support eval mode of detector for track'
         model, criterion, postprocessors = build_model(args)
@@ -266,7 +267,8 @@ def main(args):
         base_ds = get_coco_api_from_dataset(dataset_val)
 
     if args.frozen_weights is not None:
-        checkpoint = torch.load(args.frozen_weights, map_location='cpu')
+        # checkpoint = torch.load(args.frozen_weights, map_location='cpu')
+        checkpoint = torch.load(args.frozen_weights, map_location='cpu', weights_only=False)
         model_without_ddp.deform_detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
@@ -365,7 +367,7 @@ def main(args):
                      'epoch': epoch,
                      'n_parameters': n_parameters}
         
-        if epoch % 10 == 0 or epoch > args.epochs - 5:
+        if (epoch + 1) % 10 == 0 or epoch > args.epochs - 5 or epoch == 0:
             test_stats, coco_evaluator, _ = evaluate(
                 model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, fp16=args.fp16
             )
@@ -376,6 +378,8 @@ def main(args):
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
+        # empty te cache after each epoch(This can be at the end of train_one_epoch but it looks better in be here at the moment)
+        torch.cuda.empty_cache()
             # for evaluation logs
 #             if coco_evaluator is not None:
 #                 (output_dir / 'eval').mkdir(exist_ok=True)
@@ -392,7 +396,7 @@ def main(args):
     print('Training time {}'.format(total_time_str))
 
     ## NOTE: related with wandbAI 
-    # wandb.finish()
+    wandb.finish()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Deformable DETR training and evaluation script', parents=[get_args_parser()])

@@ -369,9 +369,6 @@ class MaskHeadSmallConv(nn.Module):
 
         x = self.out_lay(x)
 
-        # Clear cache to free up unused memory
-        torch.cuda.empty_cache()
-
         return x
 
 

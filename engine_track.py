@@ -45,10 +45,38 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         samples.mask = samples.mask.type(tensor_type)
 
         with torch.cuda.amp.autocast(enabled=fp16):
+        # with torch.autocast(device_type="cuda", enabled=fp16):
             outputs, pre_outputs, pre_targets = model([samples, targets])
             loss_dict = criterion(outputs, targets, pre_outputs, pre_targets)
             weight_dict = criterion.weight_dict
             losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+        
+        ##NOTE: Debug for NaN and Inf in Inputs for CUDA illegal memory access
+        if torch.isnan(samples.tensors).any():
+            print("Samples.tensors have NaN at indices:", torch.nonzero(torch.isnan(samples.tensors)))
+        if torch.isinf(samples.tensors).any():
+            print("Samples.tensors have Inf at indices:", torch.nonzero(torch.isinf(samples.tensors)))
+        
+        if torch.isnan(samples.mask).any():
+            print("Samples.mask have NaN at indices:", torch.nonzero(torch.isnan(samples.mask)))
+        if torch.isinf(samples.mask).any():
+            print("Samples.mask have Inf at indices:", torch.nonzero(torch.isinf(samples.mask)))
+        
+        #if torch.isnan(torch.tensor(targets)).any():
+        #    print("Targets have NaN at indices:", torch.nonzero(torch.isnan(torch.tensor(targets))))
+        #if torch.isinf(torch.tensor(targets)).any():
+        #    print("Targets have Inf at indices:", torch.nonzero(torch.isinf(torch.tensor(targets))))
+        targets_nan_inf = find_nan_inf_in_targets(targets)
+        if len(targets_nan_inf) > 0:
+            for target_nan_inf in targets_nan_inf:
+                idx, k, v = target_nan_inf
+                print(f"Targets have NaN or Inf at idx: {idx}, key: {k}, value: {v}")
+        
+        ##NOTE: Debug for NaN and Inf in Losses for CUDA illegal memory access
+        if torch.isnan(losses).any():
+            print("Loss has NaN at indices:", torch.nonzero(torch.isnan(losses)))
+        if torch.isinf(losses).any():
+            print("Loss has Inf at indices:", torch.nonzero(torch.isinf(losses)))
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = utils.reduce_dict(loss_dict)
@@ -68,6 +96,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         optimizer.zero_grad()
         scaler.scale(losses).backward()
         scaler.unscale_(optimizer)
+
+
+        ##NOTE: Debug for NaN and Inf in gradients for CUDA illegal memory access
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                if torch.isnan(param.grad).any():
+                    print(f"Gradient is NaN {name}")
+                if torch.isinf(param.grad).any():
+                    print(f"Gradient is Inf {name}")
+
         if max_norm > 0:
             grad_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         else:
@@ -130,7 +168,8 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         
-        with torch.cuda.amp.autocast(enabled=fp16):
+        # with torch.cuda.amp.autocast(enabled=fp16):
+        with torch.autocast(device_type="cuda", enabled=fp16):
             if det_val:
                 outputs = model(samples)
             else:
@@ -207,3 +246,19 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         stats['PQ_th'] = panoptic_res["Things"]
         stats['PQ_st'] = panoptic_res["Stuff"]
     return stats, coco_evaluator, res_tracks
+
+
+##NOTE: For debug purposes
+def is_nan_or_inf(value):
+    return torch.isnan(value).any() or torch.isinf(value).any()
+
+def find_nan_inf_in_targets(targets):
+    nan_inf_ents = []
+
+    for i, d in enumerate(targets):
+        for k, v in d.items():
+            #if k != "iscrowd" or "size" or "orig_size":
+            if is_nan_or_inf(v):
+                nan_inf_ents.append((i, k, v))
+    
+    return nan_inf_ents
