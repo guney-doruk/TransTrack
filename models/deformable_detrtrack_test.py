@@ -22,7 +22,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 from .backbone import build_backbone
 from .matcher import build_matcher
-from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
+from .seg_head_detr_test import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer_track import build_deforamble_transformer
 import copy
@@ -528,8 +528,8 @@ def build(args):
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
     )
-    if args.masks:
-        model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
+    if args.masks: # NOTE: args.mask sadece segmentation headli modeli bbox evaluationuna koymak için kullanılıyor.
+        model = DETRsegm(model, output_masks= args.mask, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
@@ -557,4 +557,4 @@ def build(args):
             is_thing_map = {i: i <= 90 for i in range(201)}
             postprocessors["panoptic"] = PostProcessPanoptic(is_thing_map, threshold=0.85)
 
-    return model, criterion, postprocessors
+    return model, criterion, postprocessors, matcher

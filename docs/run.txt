@@ -1,5 +1,5 @@
 connect from remina
-    - export LD_LIBRARY_PATH=/home/arslan/.conda/envs/transTrackVenv/lib/python3.7/site-packages/torch/lib:$LD_LIBRARY_PATH
+    - export LD_LIBRARY_PATH=/cta/users/grad4/.conda/envs/transTrack/lib/python3.12/site-packages/torch/lib:$LD_LIBRARY_PATH
 
 crowdhuman_mot_train.sh
     - CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.0000250 --lr_backbone 0.00000250 --output_dir /home/arslan/Desktop/master/TransTrack/output/finetune/deneme --dataset_file mot --coco_path /home/arslan/Desktop/master/datasets/mot17 --batch_size 1 --resume /home/arslan/Desktop/master/TransTrack/pretrained/crowdhuman_final.pth  --with_box_refine  --num_queries 500 --track_train_split trainall  --epochs 20 --lr_drop 10
@@ -21,3 +21,60 @@ crowdhuman_plus_mot_train.sh
 
 crowdhuman_mot_trainhalf.sh -> MOT17 half + Crowdhuman Train
     - CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=3 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.0000125 --lr_backbone 0.00000125 --output_dir /home/arslan/Desktop/master/TransTrack/output/finetune/crowdhuman_plus_mot_trainhalf --dataset_file mix --coco_path /home/arslan/Desktop/master/datasets/mix_half --batch_size 1  --with_box_refine  --num_queries 500 --resume /home/arslan/Desktop/master/TransTrack/pretrained/crowdhuman_final.pth --epochs 20 --lr_drop 10
+    eval: python3 main_track.py  --output_dir /home/arslan/Desktop/master/TransTrack/output/train/crowdhuman_plus_mot_trainhalf_07122024_TransTrack_env_val --dataset_file mot --coco_path /home/arslan/Desktop/master/datasets/mot17 --batch_size 1 --resume /home/arslan/Desktop/master/TransTrack/output/finetune/crowdhuman_plus_mot_trainhalf_07122024_TransTrack_env/checkpoint0019.pth --eval --with_box_refine --num_queries 500
+NOVA141 TransTrack coco seg head training frozen
+    -  CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.00000625 --lr_backbone 0.000000625 --output_dir /cta/users/grad4/master/TransTrack/output/finetune/seg_head_cocoperson_40k_pretrain_frozen_transtrack_ --dataset_file coco --coco_path /cta/users/grad4/master/datasets/coco17/personV2 --batch_size 1 --frozen_weights /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half/checkpoint0019.pth --with_box_refine --num_queries 500 --masks --epochs 50 --lr_drop 40
+
+NOVA141 TransTrack coco seg head training continue from 40th epoch
+    -  CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.00000625 --lr_backbone 0.000000625 --output_dir /cta/users/grad4/master/TransTrack/output/finetune/seg_head_cocoperson_40k_pretrain_frozen_transtrack_continue_from_40th_epoch --dataset_file coco --coco_path /cta/users/grad4/master/datasets/coco17/personV2 --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/seg_head_cocoperson_40k_pretrain_frozen_transtrack_/checkpoint0039.pth --with_box_refine --num_queries 500 --masks --epochs 100 --lr_drop 90 --cls_loss_coef 0 --bbox_loss_coef 0 --giou_loss_coef 0
+
+NOVA141 TransTrack MOTS no ingore region handling training from coco person v2 pretraining 100th epoch(No finetune on hyper parameters all stays same with pretrain and original)(09 is the validation video rest is for training)
+    -   CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.00000625 --lr_backbone 0.000000625 --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/seg_head_cocoperson_40k_pretrain_frozen_transtrack_continue_from_40th_epoch/checkpoint0099.pth --with_box_refine --num_queries 500 --masks --epochs 50 --lr_drop 50 --no_load_optimizer
+
+
+NOVA141 TransTrack MOTS ingore region handling training from coco person v2 pretraining 100th epoch(No finetune on hyper parameters all stays same with pretrain and original)(09 is the validation video rest is for training)
+    -   CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.00000625 --lr_backbone 0.000000625 --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_with_ignore_region_handling_reproducibility_check --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/seg_head_cocoperson_40k_pretrain_frozen_transtrack_continue_from_40th_epoch/checkpoint0099.pth --with_box_refine --num_queries 500 --masks --epochs 50 --lr_drop 50 --no_load_optimizer --ignored_region_handling
+        
+    -   python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_validation_with_mot17 --dataset_file mot --coco_path /cta/users/grad4/master/datasets/mot17 --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch/checkpoint0019.pth --eval --with_box_refine --num_queries 500
+
+NOVA141 TransTrack MOTS no ingore region handling training from coco person v2 pretraining 100th epoch(No finetune on hyper parameters all stays same with pretrain and original)(training set is the first half validation is the second half of the videos)
+    -   CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.00000625 --lr_backbone 0.000000625 --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_halftrain_halfval --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/seg_head_cocoperson_40k_pretrain_frozen_transtrack_continue_from_40th_epoch/checkpoint0099.pth --with_box_refine --num_queries 500 --masks --epochs 50 --lr_drop 50 --no_load_optimizer
+
+NOVA141 TransTrack MOTS no ingore region handling training from coco person v2 pretraining 100th epoch(No finetune on hyper parameters all stays same with pretrain and original) VALIDATION MOTS_09 video
+    -   python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_validation_with_MOTS_09 --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch/checkpoint0019.pth --eval --with_box_refine --num_queries 500 --masks
+
+NOVA141 crowdhuman_plus_mot_half validation with MOTS_09 video
+    -   python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half_validation_with_MOTS_09 --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half/checkpoint0019.pth --eval --with_box_refine --num_queries 500
+
+NOVA141 TransTrack MOTS no ignore region handling training from crowdhuman_plus_mot_half to compare(No finetune on hyper parameters all stays same with pretrain and original)
+    -   CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.00000625 --lr_backbone 0.000000625 --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_crowdhuman_plus_mot_half --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half/checkpoint0019.pth --with_box_refine --num_queries 500 --epochs 50 --lr_drop 50 --no_load_optimizer
+
+NOVA141 mots_train_no_ignore_from_crowdhuman_plus_mot_half validation with MOTS_09 video
+    -   python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_crowdhuman_plus_mot_half_validation_with_MOTS_09 --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_crowdhuman_plus_mot_half/checkpoint0009.pth --eval --with_box_refine --num_queries 500
+
+python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_validation_with_MOTS_05 --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch/checkpoint0019.pth --eval --with_box_refine --num_queries 500 --masks
+
+python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half_validation_nova41_model --dataset_file mot --coco_path /cta/users/grad4/master/datasets/mot17 --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half/checkpoint0019_nova41.pth --eval --with_box_refine --num_queries 500
+
+--------------------------
+python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_crowdhuman_plus_mot_half_validation_with_MOTS_09 --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_crowdhuman_plus_mot_half/checkpoint0009.pth --eval --with_box_refine --num_queries 500
+
+
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python3 -m torch.distributed.launch --nproc_per_node=1 --use_env main_track.py --lr 0.00000625 --lr_backbone 0.000000625 --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_crowdhuman_plus_mot_half --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half/checkpoint0019.pth --with_box_refine --num_queries 500 --epochs 50 --lr_drop 50 --no_load_optimizer
+
+python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_validation_with_MOTS_09_09model --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch/checkpoint0009.pth --eval --with_box_refine --num_queries 500 --masks
+
+python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half_validation_with_MOTS_09 --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/crowdhuman_plus_mot_half/checkpoint0029.pth --eval --with_box_refine --num_queries 500
+
+
+python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_crowdhuman_plus_mot_half_validation_with_MOTS_09_29model --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_crowdhuman_plus_mot_half/checkpoint0029.pth --eval --with_box_refine --num_queries 500
+
+
+python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_validation_with_MOTS_09_39model --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch/checkpoint0039.pth --eval --with_box_refine --num_queries 500 --masks
+
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python3 main_track.py  --output_dir /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_halftrain_halfval_validation --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --batch_size 1 --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_halftrain_halfval/checkpoint0029.pth --eval --with_box_refine --num_queries 500 --mask
+
+TRACKER SIDE - COMPARESION WITH ACTUAL AND US:
+ - CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 python3 main_track.py --output_dir /cta/users/grad4/master/TransTrack/output/tracker_comperision/mots_train_no_ignore_from_cocopersonv2_100thepoch_val_09_ours --dataset_file mots --coco_path /cta/users/grad4/master/datasets/MOTS --resume /cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch/checkpoint0019.pth --batch_size 1 --eval --with_box_refine --num_queries 500 --masks --mask
+
+/cta/users/grad4/master/datasets/crowdhuman/CrowdHuman_train

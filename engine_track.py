@@ -16,11 +16,11 @@ import sys
 from typing import Iterable
 
 import torch
+from scripts.utils import mean_iou_func
 import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
-
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -44,7 +44,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         samples.tensors = samples.tensors.type(tensor_type)
         samples.mask = samples.mask.type(tensor_type)
 
-        with torch.cuda.amp.autocast(enabled=fp16):
+        # with torch.cuda.amp.autocast(enabled=fp16):
+        with torch.autocast(device_type="cuda", enabled=fp16):
             outputs, pre_outputs, pre_targets = model([samples, targets])
             loss_dict = criterion(outputs, targets, pre_outputs, pre_targets)
             weight_dict = criterion.weight_dict
@@ -88,7 +89,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, tracker=None, 
+def evaluate(model, criterion, postprocessors, matcher, data_loader, base_ds, device, output_dir, masks, mask_out, tracker=None, 
              phase='train', det_val=False, fp16=False):
     tensor_type = torch.cuda.HalfTensor if fp16 else torch.cuda.FloatTensor
     model.eval()
@@ -112,6 +113,10 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
     res_tracks = dict()
     pre_embed = None
+    # For Mean IoU calculation
+    total_iou = 0.0
+    total_objects = 0 # bu kısmı number of Boxesdaki gibide alabilirsin
+    #End
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         # pre process for track.
         if tracker is not None:
@@ -150,6 +155,9 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 #                              **loss_dict_reduced_scaled,
 #                              **loss_dict_reduced_unscaled)
 #         metric_logger.update(class_error=loss_dict_reduced['class_error'])
+        
+        if masks:
+            total_iou, total_objects = mean_iou_func(outputs, targets, matcher, mask_out)
 
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
         results = postprocessors['bbox'](outputs, orig_target_sizes)
@@ -181,6 +189,18 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
             panoptic_evaluator.update(res_pano)
 
+    # ##NOTE: Mean IoU last step
+    # ##TODO: Find a way to display at the end of the validation and test.
+    if masks:
+        mean_iou = total_iou / total_objects
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        output_file = os.path.join(output_dir, "mean_iou_log.txt")
+
+        with open(output_file, 'a') as f:
+            f.write(f"Mean_IOU: {mean_iou}\n")
+        
     # gather the stats from all processes
 #     metric_logger.synchronize_between_processes()
 #     print("Averaged stats:", metric_logger)

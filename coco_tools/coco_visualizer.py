@@ -142,7 +142,8 @@ class CocoPersonExtractor:
 
 
 if __name__=="__main__":
-    data_dir = '/home/arslan/Desktop/master/datasets/coco17/person/'
+    #data_dir = '/home/arslan/Desktop/master/datasets/coco17/person/'
+    data_dir = '/cta/users/grad4/master/datasets/tao/person/'
     #output_dir = '/home/arslan/Desktop/master/datasets/coco17/person/val2017'
     data_type = 'val2017'
 

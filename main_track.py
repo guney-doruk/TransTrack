@@ -25,9 +25,8 @@ from datasets.sampler_video_distributed import DistributedVideoSampler
 from datasets import build_dataset, get_coco_api_from_dataset
 from engine_track import evaluate, train_one_epoch
 from models import build_tracktrain_model, build_tracktest_model, build_model
-from models import Tracker
+from models.tracker import Tracker
 from models import save_track
-
 from collections import defaultdict
 
 
@@ -55,6 +54,7 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--frozen_weights', type=str, default=None,
                         help="Path to the pretrained model. If set, only the mask head will be trained")
+    parser.add_argument('--no_load_optimizer', action='store_true', help="Use this for not loading the optimizer")
 
     # * Backbone
     parser.add_argument('--backbone', default='resnet50', type=str,
@@ -88,6 +88,10 @@ def get_args_parser():
     # * Segmentation
     parser.add_argument('--masks', action='store_true',
                         help="Train segmentation head if the flag is provided")
+    parser.add_argument('--mask', action='store_true',
+                        help="Include segmentation results for evaluating the model with segmentation head")
+    parser.add_argument('--mask_out', action='store_true',
+                        help='save segmentation prediction result with bbox')
 
     # Loss
     parser.add_argument('--no_aux_loss', dest='aux_loss', action='store_false',
@@ -127,6 +131,7 @@ def get_args_parser():
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
+    parser.add_argument('--ignored_region_handling', action='store_true', help='Ignored region handling on MOTS dataset')
 
     # PyTorch checkpointing for saving memory (torch.utils.checkpoint.checkpoint)
     parser.add_argument('--checkpoint_enc_ffn', default=False, action='store_true')
@@ -173,14 +178,15 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
     
-    scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
+    # scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
+    scaler = torch.GradScaler(device="cuda", enabled=args.fp16)
     if args.det_val:
         assert args.eval, 'only support eval mode of detector for track'
-        model, criterion, postprocessors = build_model(args)
+        model, criterion, postprocessors, matcher = build_model(args)
     elif args.eval:
-        model, criterion, postprocessors = build_tracktest_model(args)
+        model, criterion, postprocessors, matcher = build_tracktest_model(args)
     else:
-        model, criterion, postprocessors = build_tracktrain_model(args)
+        model, criterion, postprocessors, matcher = build_tracktrain_model(args)
         
     model.to(device)
 
@@ -263,8 +269,9 @@ def main(args):
         base_ds = get_coco_api_from_dataset(dataset_val)
 
     if args.frozen_weights is not None:
-        checkpoint = torch.load(args.frozen_weights, map_location='cpu')
-        model_without_ddp.detr.load_state_dict(checkpoint['model'])
+        # checkpoint = torch.load(args.frozen_weights, map_location='cpu')
+        checkpoint = torch.load(args.frozen_weights, map_location='cpu', weights_only=False)
+        model_without_ddp.deform_detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
     if args.resume:
@@ -279,7 +286,7 @@ def main(args):
             print('Missing Keys: {}'.format(missing_keys))
         if len(unexpected_keys) > 0:
             print('Unexpected Keys: {}'.format(unexpected_keys))
-        if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
+        if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint and not args.no_load_optimizer:
             import copy
             p_groups = copy.deepcopy(optimizer.param_groups)
             optimizer.load_state_dict(checkpoint['optimizer'])
@@ -305,8 +312,8 @@ def main(args):
     if args.eval:
         assert args.batch_size == 1, print("Now only support 1.")
         tracker = Tracker(score_thresh=args.track_thresh)
-        test_stats, coco_evaluator, res_tracks = evaluate(model, criterion, postprocessors, data_loader_val,
-                                                          base_ds, device, args.output_dir, tracker=tracker, 
+        test_stats, coco_evaluator, res_tracks = evaluate(model, criterion, postprocessors, matcher, data_loader_val,
+                                                          base_ds, device, args.output_dir, masks= args.masks, mask_out= args.mask_out, tracker=tracker, 
                                                           phase='eval', det_val=args.det_val, fp16=args.fp16)
         if args.output_dir:
 #             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
@@ -347,7 +354,7 @@ def main(args):
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
             # extra checkpoint before LR drop and every 5 epochs
-            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 5 == 0:
+            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 5 == 0 or epoch > args.epochs - 5: # or epoch > args.epochs - 5 added
                 checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
             for checkpoint_path in checkpoint_paths:
                 utils.save_on_master({
@@ -362,9 +369,10 @@ def main(args):
                      'epoch': epoch,
                      'n_parameters': n_parameters}
         
-        if epoch % 10 == 0 or epoch > args.epochs - 5:
-            test_stats, coco_evaluator, _ = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, fp16=args.fp16
+        # if epoch % 10 == 0 or epoch > args.epochs - 5:
+        if (epoch + 1) % 10 == 0 or epoch > args.epochs - 5 or epoch == 0:
+            test_stats, coco_evaluator, _, mean_iou = evaluate(
+                model, criterion, postprocessors, matcher, data_loader_val, base_ds, device, args.output_dir, args.masks, args.out_mask, fp16=args.fp16
             )
             log_test_stats = {**{f'test_{k}': v for k, v in test_stats.items()}}
             log_stats.update(log_test_stats)

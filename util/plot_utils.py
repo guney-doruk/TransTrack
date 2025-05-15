@@ -98,5 +98,7 @@ def plot_precision_recall(files, naming_scheme='iter'):
     axs[1].legend(names)
     return fig, axs
 
+if __name__ == "__main__":
+    plot_logs(logs="/cta/users/grad4/master/TransTrack/output/finetune/seg_head_cocoperson_40k_pretrain_frozen_transtrack_")
 
 

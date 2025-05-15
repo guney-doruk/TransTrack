@@ -46,6 +46,7 @@ string.""", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('--loglevel', type=str, help='Log level', default='info')
     parser.add_argument('--fmt', type=str, help='Data format', default='mot15-2D')
     parser.add_argument('--solver', type=str, help='LAP solver to use')
+    parser.add_argument('--is_one_video', type=bool, help='Evaluate through one video, if thats the case please provide that video path in groundtruths')
     return parser.parse_args()
 
 
@@ -77,8 +78,12 @@ if __name__ == '__main__':
 
     gt_type = args.gt_type
     print('gt_type', gt_type)
-    gtfiles = glob.glob(
-      os.path.join(args.groundtruths, '*/gt/gt{}.txt'.format(gt_type)))
+    if args.is_one_video:
+        gtfiles = glob.glob(
+        os.path.join(args.groundtruths, 'gt/gt{}.txt'.format(gt_type)))
+    else:
+        gtfiles = glob.glob(
+        os.path.join(args.groundtruths, '*/gt/gt{}.txt'.format(gt_type)))
     print('gt_files', gtfiles)
     tsfiles = [f for f in glob.glob(os.path.join(args.tests, '*.txt')) if not os.path.basename(f).startswith('eval')]
 

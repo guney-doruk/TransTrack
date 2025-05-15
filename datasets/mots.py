@@ -9,6 +9,8 @@ Mostly copy-paste from https://github.com/pytorch/vision/blob/13b35ff/references
 """
 from pathlib import Path
 
+import cv2
+import numpy as np
 import torch
 import torch.utils.data
 from pycocotools import mask as coco_mask
@@ -22,6 +24,7 @@ class CocoDetection(TvCocoDetection):
     def __init__(self, img_folder, ann_file, transforms, return_masks, cache_mode=False, local_rank=0, local_size=1):
         super(CocoDetection, self).__init__(img_folder, ann_file,
                                             cache_mode=cache_mode, local_rank=local_rank, local_size=local_size)
+        self.fields = ["labels", "area", "iscrowd", "boxes", "track_ids", "masks"]
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
 
@@ -52,13 +55,24 @@ class CocoDetection(TvCocoDetection):
         if self._transforms is not None:
             img, target = self._transforms(img, target)
         
+        # ignore
+        ignore = target.pop("ignore").bool()
+        for field in self.fields:
+            if field in target:
+                target[f"{field}_ignore"] = target[field][ignore]
+                target[field] = target[field][~ignore]
+        
         return img, target
 
 
 def convert_coco_poly_to_mask(segmentations, height, width):
     masks = []
     for polygons in segmentations:
-        rles = coco_mask.frPyObjects(polygons, height, width)
+        if isinstance(polygons, dict):
+            rles = {'size': polygons['size'],
+                    'counts': polygons['counts'].encode(encoding='UTF-8')}
+        else:
+            rles = coco_mask.frPyObjects(polygons, height, width)
         mask = coco_mask.decode(rles)
         if len(mask.shape) < 3:
             mask = mask[..., None]
@@ -70,6 +84,28 @@ def convert_coco_poly_to_mask(segmentations, height, width):
     else:
         masks = torch.zeros((0, height, width), dtype=torch.uint8)
     return masks
+
+def separate_ignore_regions(rle_mask, min_bbox_area=161):
+    binary_mask = coco_mask.decode(rle_mask)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary_mask.astype(np.uint8), connectivity=4)
+
+    individual_masks, bounding_boxes = [], []
+    for label in range(1, num_labels):
+        individual_mask = (labels == label).astype(np.uint8)
+        rle_individual = coco_mask.encode(np.asfortranarray(individual_mask))
+        bbox = coco_mask.toBbox(rle_individual)
+        
+        x, y, w, h = bbox
+        area = w * h
+        #print(area)
+        if area >= min_bbox_area:
+            individual_masks.append(rle_individual)
+            bounding_boxes.append(bbox)
+
+        # individual_masks.append(rle_individual)
+        # bounding_boxes.append(bbox)
+
+    return individual_masks, bounding_boxes
 
 
 class ConvertCocoPolysToMask(object):
@@ -137,8 +173,11 @@ class ConvertCocoPolysToMask(object):
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])
         iscrowd = torch.tensor([obj["iscrowd"] if "iscrowd" in obj else 0 for obj in anno])
+        ignore = torch.tensor([obj["ignore"] if "ignore" in obj else 0 for obj in anno])
+        
         target["area"] = area[keep]
         target["iscrowd"] = iscrowd[keep]
+        target["ignore"] = ignore[keep]
 
         target["orig_size"] = torch.as_tensor([int(h), int(w)])
         target["size"] = torch.as_tensor([int(h), int(w)])
@@ -214,7 +253,7 @@ def make_mot_transforms(image_set, args):
                 T.Compose([
                     T.RandomResize([800, 1000, 1200]),
 #                     T.RandomSizeCrop(384, 600),
-                    T.RandomSizeCrop_MOT(800, 1200),# NOTE: Trackformerda coco değerleri kullanılmış 
+                    T.RandomSizeCrop_MOT(800, 1200),#Trackformerda coco değerleri kullanılmış 
                     T.RandomResize(scales, max_size=1333),
                 ])
             ),
@@ -229,7 +268,7 @@ def make_mot_transforms(image_set, args):
                 T.Compose([
                     T.RandomResize([800, 1000, 1200]),
 #                     T.RandomSizeCrop(384, 600),
-                    T.RandomSizeCrop_MOT(800, 1200),# NOTE: Track formerda burayı 384 e 600 olarak alıyor motta. Burada bizim burst için videolardaki obje boyutları mota yakınsa boyle coco ya yakınsa diğer türlü almamız gerekli. yada crowd human
+                    T.RandomSizeCrop_MOT(800, 1200),#Track formerda burayı 384 e 600 olarak alıyor motta. Burada bizim burst için videolardaki obje boyutları mota yakınsa boyle coco ya yakınsa diğer türlü almamız gerekli. yada crowd human
                     T.RandomResize(scales, max_size=1333),
                 ])
             ),
@@ -252,13 +291,13 @@ def make_mot_transforms(image_set, args):
     
 def build(image_set, args):
     root = Path(args.coco_path)
-    assert root.exists(), f'provided MOT path {root} does not exist'
+    assert root.exists(), f'provided MOTS path {root} does not exist'
     mode = 'instances'
     PATHS = {
-        "train": (root / "train", root / "annotations" / 'train_half.json'),
-        "val": (root / "train", root / "annotations" / 'val_half.json'),
-        "test": (root / "test", root / "annotations" / 'test.json'),
-        "trainall": (root / "train", root / "annotations" / 'train.json'),
+        "train": (root / "mots20_train_coco_09_divided", root / "annotations" / 'mots20_train_coco_09_divided.json'),
+        "val": (root / "mots20_val_coco_09_divided", root / "annotations" / 'mots20_val_coco_09_divided.json'),
+        #"test": (root / "test", root / "annotations" / 'test.json'),
+        "trainall": (root / "mots20_train_coco_full", root / "annotations" / 'mots20_train_coco_full.json'),
 
     }
 

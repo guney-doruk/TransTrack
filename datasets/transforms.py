@@ -21,7 +21,7 @@ def crop_mot(image, target, region):
     # should we do something wrt the original size?
     target["size"] = torch.tensor([h, w])
 
-    fields = ["labels", "area", "iscrowd"]
+    fields = ["labels", "area", "iscrowd", "ignore", "track_ids"] # NOTE: ignore and track_ids are added for compatibility and ignore region handling for MOTS
 
     if "boxes" in target:
         boxes = target["boxes"]
@@ -30,7 +30,7 @@ def crop_mot(image, target, region):
         
 #         cropped_boxes = torch.min(cropped_boxes.reshape(-1, 2, 2), max_size)
 #         cropped_boxes = cropped_boxes.clamp(min=0)
-        
+        # NOTE: added for overflow in boxes mostly from Deformable as Trackformer
         for i, box in enumerate(cropped_boxes):
             l, t, r, b = box
             if l < 0 and r < 0:
@@ -65,7 +65,8 @@ def crop_mot(image, target, region):
             keep = target['masks'].flatten(1).any(1)
 
         for field in fields:
-            target[field] = target[field][keep]
+            if field in target:
+                target[field] = target[field][keep]
 
     return cropped_image, target
 
@@ -122,6 +123,12 @@ def hflip(image, target):
         boxes = target["boxes"]
         boxes = boxes[:, [2, 1, 0, 3]] * torch.as_tensor([-1, 1, -1, 1]) + torch.as_tensor([w, 0, w, 0])
         target["boxes"] = boxes
+    
+    # NOTE: added for ignore region handling on MOTS
+    if "boxes_ignore" in target:
+        boxes = target["boxes_ignore"]
+        boxes = boxes[:, [2, 1, 0, 3]] * torch.as_tensor([-1, 1, -1, 1]) + torch.as_tensor([w, 0, w, 0])
+        target["boxes_ignore"] = boxes
 
     if "masks" in target:
         target['masks'] = target['masks'].flip(-1)

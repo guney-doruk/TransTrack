@@ -1,4 +1,4 @@
-# Modified by Peize Sun, Rufeng Zhang
+# Modified by Uygar Kaya, Güney Doruk Keser
 # ------------------------------------------------------------------------
 # Modified from DETR (https://github.com/facebookresearch/detr)
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
@@ -55,10 +55,10 @@ class CocoDetection(TvCocoDetection):
         return img, target
 
 
-def convert_coco_poly_to_mask(segmentations, height, width):
+def convert_coco_rles_to_mask(segmentations, height, width):
     masks = []
-    for polygons in segmentations:
-        rles = coco_mask.frPyObjects(polygons, height, width)
+    for rles in segmentations:
+        #rles = coco_mask.frPyObjects(polygons, height, width)
         mask = coco_mask.decode(rles)
         if len(mask.shape) < 3:
             mask = mask[..., None]
@@ -93,18 +93,19 @@ class ConvertCocoPolysToMask(object):
         # guard against no boxes via resizing
         boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
         boxes[:, 2:] += boxes[:, :2]
+        ## kapatılması MOT17 için overflow_boxes a karşı bir koruma Burstte ihtiyaç var mıdır bilmiyorum.
 #         boxes[:, 0::2].clamp_(min=0, max=w)
 #         boxes[:, 1::2].clamp_(min=0, max=h)
 
         classes = [obj["category_id"] for obj in anno]
         classes = torch.tensor(classes, dtype=torch.int64)
 
-        track_ids = [obj["track_id"] for obj in anno]
+        track_ids = [int(obj["track_id"]) for obj in anno]
         track_ids = torch.tensor(track_ids, dtype=torch.int64)
 
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
-            masks = convert_coco_poly_to_mask(segmentations, h, w)
+            masks = convert_coco_rles_to_mask(segmentations, h, w)
 
         keypoints = None
         if anno and "keypoints" in anno[0]:
@@ -169,24 +170,12 @@ def make_coco_transforms(image_set):
             normalize,
         ])
     
-    if image_set == 'trainall':
-        return T.Compose([
-            T.RandomHorizontalFlip(),
-            T.RandomSelect(
-                T.RandomResize(scales, max_size=1333),
-                T.Compose([
-                    T.RandomResize([400, 500, 600]),
-                    T.RandomSizeCrop(384, 600),
-                    T.RandomResize(scales, max_size=1333),
-                ])
-            ),
-            normalize,
-        ])
     if image_set == 'val':
         return T.Compose([
             T.RandomResize([800], max_size=1333),
             normalize,
         ])
+    
     if image_set == 'test':
         return T.Compose([
             T.RandomResize([800], max_size=1333),
@@ -194,10 +183,9 @@ def make_coco_transforms(image_set):
         ])
     raise ValueError(f'unknown {image_set}')
 
-    
-    
-    
-def make_mot_transforms(image_set, args):
+      
+def make_burst_transforms(image_set, args):
+    """ Currently mot transform sizes have been used. Coco sizes can bu used if there is a problem"""
 
     normalize = T.Compose([
         T.ToTensor(),
@@ -214,27 +202,13 @@ def make_mot_transforms(image_set, args):
                 T.Compose([
                     T.RandomResize([800, 1000, 1200]),
 #                     T.RandomSizeCrop(384, 600),
-                    T.RandomSizeCrop_MOT(800, 1200),# NOTE: Trackformerda coco değerleri kullanılmış 
+                    T.RandomSizeCrop_MOT(800, 1200),
                     T.RandomResize(scales, max_size=1333),
                 ])
             ),
             normalize,
         ])
     
-    if image_set == 'trainall' and not args.eval:
-        return T.Compose([
-            T.RandomHorizontalFlip(),
-            T.RandomSelect(
-                T.RandomResize(scales, max_size=1333),
-                T.Compose([
-                    T.RandomResize([800, 1000, 1200]),
-#                     T.RandomSizeCrop(384, 600),
-                    T.RandomSizeCrop_MOT(800, 1200),# NOTE: Track formerda burayı 384 e 600 olarak alıyor motta. Burada bizim burst için videolardaki obje boyutları mota yakınsa boyle coco ya yakınsa diğer türlü almamız gerekli. yada crowd human
-                    T.RandomResize(scales, max_size=1333),
-                ])
-            ),
-            normalize,
-        ])
     if image_set == 'val' or args.eval:
         return T.Compose([
             T.RandomResize([800], max_size=1333),
@@ -245,24 +219,21 @@ def make_mot_transforms(image_set, args):
             T.RandomResize([800], max_size=1333),
             normalize,
         ])
-    raise ValueError(f'unknown {image_set}')
-
-
-
     
+    raise ValueError(f'unknown {image_set}')
+ 
 def build(image_set, args):
     root = Path(args.coco_path)
-    assert root.exists(), f'provided MOT path {root} does not exist'
+    assert root.exists(), f'provided Burst path {root} does not exist'
     mode = 'instances'
     PATHS = {
-        "train": (root / "train", root / "annotations" / 'train_half.json'),
-        "val": (root / "train", root / "annotations" / 'val_half.json'),
-        "test": (root / "test", root / "annotations" / 'test.json'),
-        "trainall": (root / "train", root / "annotations" / 'train.json'),
-
+        "train": (root / "train/frames/train", root / "annotations" / 'instances_train.json'),
+        "val": (root / "val/frames/val", root / "annotations" / 'instances_val.json'),
+        ##TODO: To be implemented
+        # "test": (root / "test", root / "annotations" / 'test.json'),
     }
 
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoDetection(img_folder, ann_file, transforms=make_mot_transforms(image_set, args), return_masks=args.masks,
+    dataset = CocoDetection(img_folder, ann_file, transforms=make_burst_transforms(image_set, args), return_masks=args.masks,
                             cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size())
     return dataset
