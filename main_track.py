@@ -22,8 +22,9 @@ import datasets
 import util.misc as utils
 import datasets.samplers as samplers
 from datasets.sampler_video_distributed import DistributedVideoSampler
+from scripts.uncertainty_loss import UncertaintyLossWrapper
 from datasets import build_dataset, get_coco_api_from_dataset
-from engine_track import evaluate, train_one_epoch
+from engine_track import evaluate, train_one_epoch, train_one_epoch_uncertainty_loss
 from models import build_tracktrain_model, build_tracktest_model, build_model
 from models import Tracker
 from models import save_track
@@ -338,16 +339,19 @@ def main(args):
 
     print("Start training")
     start_time = time.time()
+    uncertainty_loss_criterion = UncertaintyLossWrapper(base_criterion=criterion).to(device)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, scaler, epoch, args.clip_max_norm, fp16=args.fp16)
+        # train_stats = train_one_epoch(
+        #    model, criterion, data_loader_train, optimizer, device, scaler, epoch, args.clip_max_norm, fp16=args.fp16)
+        train_stats = train_one_epoch_uncertainty_loss(
+            model, uncertainty_loss_criterion, data_loader_train, optimizer, device, scaler, epoch, args.clip_max_norm, fp16=args.fp16)
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
             # extra checkpoint before LR drop and every 5 epochs
-            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 5 == 0:
+            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 5 == 0 or epoch > args.epochs - 5:
                 checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
             for checkpoint_path in checkpoint_paths:
                 utils.save_on_master({
@@ -362,7 +366,8 @@ def main(args):
                      'epoch': epoch,
                      'n_parameters': n_parameters}
         
-        if epoch % 10 == 0 or epoch > args.epochs - 5:
+        #if epoch % 10 == 0 or epoch > args.epochs - 5:
+        if (epoch + 1) % 10 == 0 or epoch > args.epochs - 5 or epoch == 0:
             test_stats, coco_evaluator, _ = evaluate(
                 model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, fp16=args.fp16
             )
