@@ -187,3 +187,4 @@ dmypy.json
 .pyre/
 
 *wandb
+*docs

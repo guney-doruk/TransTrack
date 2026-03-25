@@ -148,7 +148,7 @@ def generate_coco_from_mot(split_name='train', seqs_names=None,
             img_height = MOT_15_SEQS_INFO[seq]['img_height']
             seq_length = MOT_15_SEQS_INFO[seq]['seq_length']
 
-        seg_list_dir = sorted(os.listdir(os.path.join(root_split_path, seq, 'img1')))
+        seg_list_dir = os.listdir(os.path.join(root_split_path, seq, 'img1'))
         start_frame = int(frame_range['start'] * seq_length)
         end_frame = int(frame_range['end'] * seq_length)
         seg_list_dir = seg_list_dir[start_frame: end_frame]
@@ -390,20 +390,31 @@ if __name__ == '__main__':
         #     mots=True)
 
         #TRAIN SET with VAL - TRAIN PART #NOTE: Half frame seperated
-        generate_coco_from_mot(
-            'mots20_train_coco_half',
-            seqs_names=['MOTS20-02', 'MOTS20-05', 'MOTS20-09', 'MOTS20-11'],
-            mots=True,
-            frame_range={'start': 0, 'end': 0.5})
+        # generate_coco_from_mot(
+        #     'mots20_train_coco_half',
+        #     seqs_names=['MOTS20-02', 'MOTS20-05', 'MOTS20-09', 'MOTS20-11'],
+        #     mots=True,
+        #     frame_range={'start': 0, 'end': 0.5})
         
-        # #TRAIN SET with VAL - VAL PART
-        generate_coco_from_mot(
-            'mots20_val_coco_half',
-            seqs_names=['MOTS20-02', 'MOTS20-05', 'MOTS20-09', 'MOTS20-11'],
-            mots=True,
-            frame_range={'start': 0.5, 'end': 1})
+        # # #TRAIN SET with VAL - VAL PART
+        # generate_coco_from_mot(
+        #     'mots20_val_coco_half',
+        #     seqs_names=['MOTS20-02', 'MOTS20-05', 'MOTS20-09', 'MOTS20-11'],
+        #     mots=True,
+        #     frame_range={'start': 0.5, 'end': 1})
 
         # generate_coco_from_mot(
         #      'mots20_val_coco_05_divided',
         #      seqs_names=['MOTS20-05'],
         #      mots=True)
+
+        for i in range(4):
+            train_seqs = ['MOTS20-02', 'MOTS20-05', 'MOTS20-09', 'MOTS20-11']
+            val_seqs = train_seqs.pop(i)
+
+            generate_coco_from_mot(
+                f'mots20_train_{i + 1}_coco',
+                seqs_names=train_seqs, mots=True)
+            generate_coco_from_mot(
+                f'mots20_val_{i + 1}_coco',
+                seqs_names=val_seqs, mots=True)

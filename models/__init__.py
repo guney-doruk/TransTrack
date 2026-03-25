@@ -10,7 +10,10 @@
 from .deformable_detr import build
 from .deformable_detrtrack_test import build as build_tracktest
 from .deformable_detrtrack_train import build as build_tracktrain
+
+#from .deformable_detrtrack_train_extra_dim import build as build_tracktrain
 from .tracker import Tracker
+from .tracker_mask_box_iou import EnhancedTracker
 from .save_track import save_track
 
 

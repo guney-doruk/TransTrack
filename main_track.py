@@ -13,19 +13,22 @@ import json
 import random
 import time
 import wandb
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import datasets
+from scripts.uncertainty_loss import UncertaintyLossWrapper, UncertaintyLossWrapper_v2
 import util.misc as utils
 import datasets.samplers as samplers
 from datasets.sampler_video_distributed import DistributedVideoSampler
 from datasets import build_dataset, get_coco_api_from_dataset
-from engine_track import evaluate, train_one_epoch
+from engine_track import evaluate, train_one_epoch, train_one_epoch_uncertainty_loss
 from models import build_tracktrain_model, build_tracktest_model, build_model
 from models.tracker import Tracker
+from models.tracker_mask_box_iou import EnhancedTracker
 from models import save_track
 from collections import defaultdict
 
@@ -92,10 +95,14 @@ def get_args_parser():
                         help="Include segmentation results for evaluating the model with segmentation head")
     parser.add_argument('--mask_out', action='store_true',
                         help='save segmentation prediction result with bbox')
+    parser.add_argument('--bbox_masking', action='store_true',
+                        help='Use if you want to filter the output mask with bbox area before loss computation - ie box guided mask training')
 
     # Loss
     parser.add_argument('--no_aux_loss', dest='aux_loss', action='store_false',
                         help="Disables auxiliary decoding losses (loss at each layer)")
+    parser.add_argument('--uncertainity_loss', action='store_true',
+                        help="Enable uncertainity loss during backward")
 
     # * Matcher
     parser.add_argument('--set_cost_class', default=2, type=float,
@@ -104,15 +111,17 @@ def get_args_parser():
                         help="L1 box coefficient in the matching cost")
     parser.add_argument('--set_cost_giou', default=2, type=float,
                         help="giou box coefficient in the matching cost")
+    
 
     # * Loss coefficients
-    parser.add_argument('--mask_loss_coef', default=1, type=float)
-    parser.add_argument('--dice_loss_coef', default=1, type=float)
+    parser.add_argument('--mask_loss_coef', default=2, type=float)
+    parser.add_argument('--dice_loss_coef', default=5, type=float)
     parser.add_argument('--cls_loss_coef', default=2, type=float)
     parser.add_argument('--bbox_loss_coef', default=5, type=float)
     parser.add_argument('--giou_loss_coef', default=2, type=float)
     parser.add_argument('--focal_alpha', default=0.25, type=float)
     parser.add_argument('--id_loss_coef', default=1, type=float)
+    parser.add_argument('--consistency_loss_coef', default=2, type=float)
 
     # dataset parameters
     parser.add_argument('--dataset_file', default='coco')
@@ -141,6 +150,13 @@ def get_args_parser():
     parser.add_argument('--track_train_split', default='train', type=str)
     parser.add_argument('--track_eval_split', default='val', type=str)
     parser.add_argument('--track_thresh', default=0.4, type=float)
+    #Added for enhanced tracker
+    parser.add_argument('--box_weight', default=0.5, type=float)
+    parser.add_argument('--mask_weight', default=0.5, type=float)
+    parser.add_argument('--unmatch_threshold', default=1.2, type=float)
+    parser.add_argument('--use_box_small', action='store_true')
+    parser.add_argument('--use_scaled_factor', action='store_true')
+    #end
     parser.add_argument('--reid_shared', default=False, type=bool)
     parser.add_argument('--reid_dim', default=128, type=int)
     parser.add_argument('--num_ids', default=360, type=int)
@@ -155,14 +171,19 @@ def get_args_parser():
     # multi-gpu test
     parser.add_argument('--start_id', default=1, type=int)
     parser.add_argument('--dist_video', default=False, action='store_true')
+
+    #wandb
+    parser.add_argument('--wandb', action='store_true')
+
     return parser
 
 
 def main(args):
-    wandb.init(
-        project="TransTrack",
-        config=args
-    )
+    if args.wandb:
+        wandb.init(
+            project="TransTrack",
+            config=args
+        )
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
 
@@ -174,9 +195,21 @@ def main(args):
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
+    os.environ["PYTHONHASHSEED"] = str(seed) 
+
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+    #Added for ensuring reproducibility
+    torch.cuda.manual_seed(seed) 
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    g = torch.Generator()
+    g.manual_seed(seed)
     
     # scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
     scaler = torch.GradScaler(device="cuda", enabled=args.fp16)
@@ -216,10 +249,10 @@ def main(args):
 
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                    collate_fn=utils.collate_fn, num_workers=args.num_workers,
-                                   pin_memory=True)
+                                   pin_memory=True, generator=g)
     data_loader_val = DataLoader(dataset_val, args.batch_size, sampler=sampler_val,
                                  drop_last=False, collate_fn=utils.collate_fn, num_workers=args.num_workers,
-                                 pin_memory=True)
+                                 pin_memory=True, generator=g)
 
     # lr_backbone_names = ["backbone.0", "backbone.neck", "input_proj", "transformer.encoder"]
     def match_name_keywords(n, name_keywords):
@@ -249,6 +282,13 @@ def main(args):
             "lr": args.lr * args.lr_linear_proj_mult,
         }
     ]
+     # NEW: Add criterion's parameters (log_vars, etc)
+    if args.uncertainity_loss:
+        param_dicts.append({
+            "params": [p for p in criterion.parameters() if p.requires_grad],
+            "lr": getattr(args, 'lr_uncertainty', args.lr)  # Optional: use custom lr for criterion
+        })  
+    
     if args.sgd:
         optimizer = torch.optim.SGD(param_dicts, lr=args.lr, momentum=0.9,
                                     weight_decay=args.weight_decay)
@@ -302,6 +342,9 @@ def main(args):
                 lr_scheduler.step_size = args.lr_drop
                 lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
             lr_scheduler.step(lr_scheduler.last_epoch)
+            ##NOTE: For Uncertainity loss parameters.
+            if 'criterion' in checkpoint and checkpoint['criterion'] is not None:
+                criterion.load_state_dict(checkpoint['criterion'])
             args.start_epoch = checkpoint['epoch'] + 1
         # check the resumed model
 #         if not args.eval:
@@ -311,10 +354,12 @@ def main(args):
     
     if args.eval:
         assert args.batch_size == 1, print("Now only support 1.")
-        tracker = Tracker(score_thresh=args.track_thresh)
+        # tracker = Tracker(score_thresh=args.track_thresh)
+        tracker = EnhancedTracker(score_thresh=args.track_thresh, bbox_weight=args.box_weight, mask_weight=args.mask_weight, unmatch_threshold=args.unmatch_threshold, use_box_small=args.use_box_small, use_scaled_factor=args.use_scaled_factor)
         test_stats, coco_evaluator, res_tracks = evaluate(model, criterion, postprocessors, matcher, data_loader_val,
                                                           base_ds, device, args.output_dir, masks= args.masks, mask_out= args.mask_out, tracker=tracker, 
-                                                          phase='eval', det_val=args.det_val, fp16=args.fp16)
+                                                          phase='eval', det_val=args.det_val, fp16=args.fp16, bbox_masking=args.bbox_masking)
+        
         if args.output_dir:
 #             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
             if res_tracks is not None:
@@ -348,8 +393,14 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, scaler, epoch, args.clip_max_norm, fp16=args.fp16)
+        if args.uncertainity_loss:
+             uncertainty_loss_criterion = UncertaintyLossWrapper_v2(base_criterion=criterion).to(device)#Criterionda tanımlanan nnparamlar olmadığı surece burayı  kapat
+             train_stats = train_one_epoch_uncertainty_loss(
+             model, uncertainty_loss_criterion, data_loader_train, optimizer, device, scaler, epoch, args.clip_max_norm, fp16=args.fp16, bbox_masking=args.bbox_masking)
+        else:
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train, optimizer, device, scaler, epoch, args.clip_max_norm, fp16=args.fp16, bbox_masking=args.bbox_masking)
+        
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
@@ -360,6 +411,7 @@ def main(args):
                 utils.save_on_master({
                     'model': model_without_ddp.state_dict(),
                     'optimizer': optimizer.state_dict(),
+                    'criterion': criterion.state_dict() if args.uncertainity_loss else None,
                     'lr_scheduler': lr_scheduler.state_dict(),
                     'epoch': epoch,
                     'args': args,
@@ -371,8 +423,8 @@ def main(args):
         
         # if epoch % 10 == 0 or epoch > args.epochs - 5:
         if (epoch + 1) % 10 == 0 or epoch > args.epochs - 5 or epoch == 0:
-            test_stats, coco_evaluator, _, mean_iou = evaluate(
-                model, criterion, postprocessors, matcher, data_loader_val, base_ds, device, args.output_dir, args.masks, args.out_mask, fp16=args.fp16
+            test_stats, coco_evaluator, _= evaluate(
+                model, criterion, postprocessors, matcher, data_loader_val, base_ds, device, args.output_dir, args.masks, args.mask_out, fp16=args.fp16, bbox_masking=args.bbox_masking
             )
             log_test_stats = {**{f'test_{k}': v for k, v in test_stats.items()}}
             log_stats.update(log_test_stats)
@@ -397,7 +449,8 @@ def main(args):
     print('Training time {}'.format(total_time_str))
 
     ## NOTE: related with wandbAI 
-    wandb.finish()
+    if args.wandb:
+        wandb.finish()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Deformable DETR training and evaluation script', parents=[get_args_parser()])

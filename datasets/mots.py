@@ -294,11 +294,11 @@ def build(image_set, args):
     assert root.exists(), f'provided MOTS path {root} does not exist'
     mode = 'instances'
     PATHS = {
-        "train": (root / "mots20_train_coco_09_divided", root / "annotations" / 'mots20_train_coco_09_divided.json'),
-        "val": (root / "mots20_val_coco_09_divided", root / "annotations" / 'mots20_val_coco_09_divided.json'),
+        "train": (root / "mots20_train_coco_half", root / "annotations" / 'mots20_train_coco_half.json'),
+        "val": (root / "mots20_val_coco_half", root / "annotations" / 'mots20_val_coco_half.json'),
         #"test": (root / "test", root / "annotations" / 'test.json'),
         "trainall": (root / "mots20_train_coco_full", root / "annotations" / 'mots20_train_coco_full.json'),
-
+        "single": (root / "mots20_val_coco_half_single", root / "annotations" / 'mots20_val_coco_half_single.json'),
     }
 
     img_folder, ann_file = PATHS[image_set]

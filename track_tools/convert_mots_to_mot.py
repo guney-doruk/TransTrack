@@ -59,6 +59,9 @@ def convert_mots_to_motchallenge(input_file, output_file):
         bb_left, bb_top, bb_width, bb_height = bbox
         results.append(f"{frame},{obj_id},{bb_left},{bb_top},{bb_width},{bb_height},{conf},-1,-1,-1\n")
     
+    #Sort based on obj_id
+    results.sort(key=lambda x: int(x.split(',')[1]))
+
     with open(output_file, 'w') as f:
         f.writelines(results)
 
@@ -66,7 +69,7 @@ def process_conversion(input_dir, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
     for file in os.listdir(input_dir):
-        if file.endswith(".txt"):
+        if file.endswith("gt.txt"):
             input_path = os.path.join(input_dir, file)
             output_path = os.path.join(output_dir, file)
             convert_mots_to_motchallenge(input_path, output_path)
@@ -75,7 +78,9 @@ def process_conversion(input_dir, output_dir):
 
 if __name__ == "__main__":
     base_path = '/cta/users/grad4/master/datasets/MOTS/train/'
-    mots_path = 'MOTS20-09/'
+    mots_path = 'MOTS20-11/'
     input_directory = base_path + mots_path + "gt"
+    #input_directory = base_path + mots_path + "gt"
     output_directory = base_path + mots_path + "gt_mot"
+    #output_directory = base_path + mots_path + "gt_mot_val_half"
     process_conversion(input_directory, output_directory)

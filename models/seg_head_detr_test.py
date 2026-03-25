@@ -19,6 +19,8 @@ from PIL import Image
 import util.box_ops as box_ops
 from util.misc import NestedTensor, interpolate, nested_tensor_from_tensor_list
 
+from scripts.utils import apply_bbox_masking_and_visualize_eval
+
 try:
     from panopticapi.utils import id2rgb, rgb2id
 except ImportError:
@@ -557,21 +559,125 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
     return loss.mean(1).sum() / num_boxes
 
 
+
 class PostProcessSegm(nn.Module):
     def __init__(self, threshold=0.5):
         super().__init__()
         self.threshold = threshold
 
     @torch.no_grad()
-    def forward(self, results, outputs, orig_target_sizes, max_target_sizes):
+    def forward(self, results, outputs, targets, orig_target_sizes, max_target_sizes, pred_idx, tgt_idx, bbox_masking=False):
         assert len(orig_target_sizes) == len(max_target_sizes)
         max_h, max_w = max_target_sizes.max(0)[0].tolist()
         outputs_masks = outputs["pred_masks"].squeeze(2)
-        outputs_tracking_masks = outputs["tracking_masks"].squeeze(2)#NOTE: squeeze(2) tamamen predde olduğu için ezbere konuldu ne formatına dönüşüyor debugdan bakmak lazım
+        outputs_tracking_masks = outputs["tracking_masks"].squeeze(2)#NOTE: squeeze(2) tamamen predde olduğu için ezbere konuldu ne formatına dönüşüyor debugdan bakmak lazım. Bunun bir effecti yok 1 gelirse kaldırıyor bizde torch.Size([1, 500, 94, 167]) noyutlar bu şekilde geliyor.
+
+        if bbox_masking:
+            src_masks = outputs_masks.clone()
+            src_tracking_masks = outputs_tracking_masks.clone()
+
+            target_masks, valid = nested_tensor_from_tensor_list([t["masks"] for t in targets]).decompose()
+            target_masks = target_masks.to(src_masks)
+
+            src_masks = src_masks[pred_idx]
+            src_tracking_masks = src_tracking_masks[pred_idx]##NOTE: This is a hack there maybe an extra object in source but not in tracking
+
+            src_masks = F.interpolate(src_masks.unsqueeze(0), size=(max_h, max_w), mode="bilinear", align_corners=False)
+            src_masks = (src_masks.sigmoid() > self.threshold)
+            src_tracking_masks = F.interpolate(src_tracking_masks.unsqueeze(0), size=(max_h, max_w), mode="bilinear", align_corners=False)
+            src_tracking_masks = (src_tracking_masks.sigmoid() > self.threshold)
+
+            device = src_masks.device
+            # Get bbox preds
+            src_boxes = outputs['pred_boxes'][pred_idx]
+            track_boxes = outputs['tracking_boxes'][pred_idx]
+            src_boxes = box_ops.box_cxcywh_to_xyxy(src_boxes)
+            track_boxes = box_ops.box_cxcywh_to_xyxy(track_boxes)
+            scale_fct = torch.stack([torch.tensor([max_w], device=device),
+                                    torch.tensor([max_h], device=device),
+                                    torch.tensor([max_w], device=device),
+                                    torch.tensor([max_h], device=device)], dim=1)
+            src_boxes = src_boxes * scale_fct
+            track_boxes = track_boxes * scale_fct
+
+            #Arrange target_mask so that it will have same index with src_mask
+            target_masks = target_masks[tgt_idx]
+
+            
+            assert src_masks.shape[-2:] == src_tracking_masks.shape[-2:]
+            B, N_s, H, W = src_masks.shape
+            _, N_t, _, _ = src_tracking_masks.shape
+
+            # Clamp bounding boxes to valid image boundaries
+            src_boxes_clamped = src_boxes.clone()
+            src_boxes_clamped[:, 0] = torch.clamp(src_boxes_clamped[:, 0], min=0, max=W-1)  # x1
+            src_boxes_clamped[:, 1] = torch.clamp(src_boxes_clamped[:, 1], min=0, max=H-1)  # y1
+            src_boxes_clamped[:, 2] = torch.clamp(src_boxes_clamped[:, 2], min=0, max=W-1)  # x2
+            src_boxes_clamped[:, 3] = torch.clamp(src_boxes_clamped[:, 3], min=0, max=H-1)  # y2
+
+            # Clamp bounding boxes to valid image boundaries
+            track_boxes_clamped = track_boxes.clone()
+            track_boxes_clamped[:, 0] = torch.clamp(track_boxes_clamped[:, 0], min=0, max=W-1)  # x1
+            track_boxes_clamped[:, 1] = torch.clamp(track_boxes_clamped[:, 1], min=0, max=H-1)  # y1
+            track_boxes_clamped[:, 2] = torch.clamp(track_boxes_clamped[:, 2], min=0, max=W-1)  # x2
+            track_boxes_clamped[:, 3] = torch.clamp(track_boxes_clamped[:, 3], min=0, max=H-1)  # y2
+            
+            # Convert to integer coordinates
+            src_boxes_int = src_boxes_clamped.round().long()
+
+            # Convert to integer coordinates
+            track_boxes_int = track_boxes_clamped.round().long()
+
+            # Create binary masks for each bounding box
+            bbox_masks = torch.zeros_like(src_masks, device=device)
+            bbox_masks_track = torch.zeros_like(src_tracking_masks, device=device)
+
+            for j in range(B):
+                for i in range(N_s):
+                    x1, y1, x2, y2 = src_boxes_int[i]
+                    # Ensure x2 >= x1 and y2 >= y1 (in case of invalid boxes)
+                    x1, x2 = min(x1, x2), max(x1, x2)
+                    y1, y2 = min(y1, y2), max(y1, y2)
+                    
+                    # Set the bounding box region to 1
+                    bbox_masks[j][i, y1:y2+1, x1:x2+1] = 1.0
+
+            
+                for i in range(N_t):
+                    x1_t, y1_t, x2_t, y2_t = track_boxes_int[i]
+                    # Ensure x2 >= x1 and y2 >= y1 (in case of invalid boxes)
+                    x1_t, x2_t = min(x1_t, x2_t), max(x1_t, x2_t)
+                    y1_t, y2_t = min(y1_t, y2_t), max(y1_t, y2_t)
+
+                    # Set the bounding box region to 1
+                    bbox_masks_track[j][i, y1_t:y2_t+1, x1_t:x2_t+1] = 1.0
+            
+            # Apply the bbox mask to the predicted masks
+            masked_predictions = src_masks * bbox_masks
+
+            # Apply the bbox mask to the predicted masks
+            masked_predictions_track = src_tracking_masks * bbox_masks_track
+
+
         outputs_masks = F.interpolate(outputs_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
-        outputs_masks = (outputs_masks.sigmoid() > self.threshold).cpu()
+        outputs_masks = (outputs_masks.sigmoid() > self.threshold)
         outputs_tracking_masks = F.interpolate(outputs_tracking_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
-        outputs_tracking_masks = (outputs_tracking_masks.sigmoid() > self.threshold).cpu()
+        outputs_tracking_masks = (outputs_tracking_masks.sigmoid() > self.threshold)
+
+        if bbox_masking:
+            batch_idx, obj_idx = pred_idx
+            
+            # Use advanced indexing to assign all at once
+            # We need to create indices for the masked_predictions tensor
+            mask_batch_idx = torch.arange(len(batch_idx), device=masked_predictions.device)
+            
+            outputs_masks[batch_idx, obj_idx] = masked_predictions[batch_idx, mask_batch_idx]
+            outputs_tracking_masks[batch_idx, obj_idx] = masked_predictions_track[batch_idx, mask_batch_idx]
+
+        #to CPU
+        outputs_masks = outputs_masks.cpu()
+        outputs_tracking_masks = outputs_tracking_masks.cpu()
+       
 
         for i, (cur_mask, cur_tracking_mask, t, tt) in enumerate(zip(outputs_masks, outputs_tracking_masks, max_target_sizes, orig_target_sizes)):
             img_h, img_w = t[0], t[1]
@@ -585,9 +691,281 @@ class PostProcessSegm(nn.Module):
                 results[i]["track_masks"].float(), size=tuple(tt.tolist()), mode="nearest"
             ).byte()
 
-            ##NOTE: Mask boyutları Query x 1 x H x W şeklinde geliyor bunu işlerken squeeze(dim=1) yapmak zorundayız Trackformer gibi.
+            ##NOTE: Mask boyutları Query x 1 x H x W şeklinde geliyor bunu işlerken squeeze(dim=1) yapmak zorundayız Trackformer gibi. 
 
         return results
+# ##NOTE: This version has two seperate pairs one is for tracking decoder and one is for detection decoder and covers the corner cases like newborn object or object exits the scene for box filtering.
+# class PostProcessSegm(nn.Module):
+#     def __init__(self, threshold=0.5):
+#         super().__init__()
+#         self.threshold = threshold
+
+#     @torch.no_grad()
+#     def forward(self, results, outputs, targets, orig_target_sizes, max_target_sizes, pred_idx, tgt_idx, pred_idx_prev, tgt_idx_prev, bbox_masking=False):
+#         assert len(orig_target_sizes) == len(max_target_sizes)
+#         max_h, max_w = max_target_sizes.max(0)[0].tolist()
+#         outputs_masks = outputs["pred_masks"].squeeze(2)
+#         outputs_tracking_masks = outputs["tracking_masks"].squeeze(2)#NOTE: squeeze(2) tamamen predde olduğu için ezbere konuldu ne formatına dönüşüyor debugdan bakmak lazım. Bunun bir effecti yok 1 gelirse kaldırıyor bizde torch.Size([1, 500, 94, 167]) noyutlar bu şekilde geliyor.
+
+#         if bbox_masking:
+#             src_masks = outputs_masks.clone()
+#             src_tracking_masks = outputs_tracking_masks.clone()
+
+#             target_masks, valid = nested_tensor_from_tensor_list([t["masks"] for t in targets]).decompose()
+#             target_masks = target_masks.to(src_masks)
+
+#             src_masks = src_masks[pred_idx]
+#             src_tracking_masks = src_tracking_masks[pred_idx_prev]
+
+#             src_masks = F.interpolate(src_masks.unsqueeze(0), size=(max_h, max_w), mode="bilinear", align_corners=False)
+#             src_masks = (src_masks.sigmoid() > self.threshold)
+#             src_tracking_masks = F.interpolate(src_tracking_masks.unsqueeze(0), size=(max_h, max_w), mode="bilinear", align_corners=False)
+#             src_tracking_masks = (src_tracking_masks.sigmoid() > self.threshold)
+
+#             device = src_masks.device
+#             # Get bbox preds
+#             src_boxes = outputs['pred_boxes'][pred_idx]
+#             track_boxes = outputs['tracking_boxes'][pred_idx_prev]
+#             src_boxes = box_ops.box_cxcywh_to_xyxy(src_boxes)
+#             track_boxes = box_ops.box_cxcywh_to_xyxy(track_boxes)
+#             scale_fct = torch.stack([torch.tensor([max_w], device=device),
+#                                     torch.tensor([max_h], device=device),
+#                                     torch.tensor([max_w], device=device),
+#                                     torch.tensor([max_h], device=device)], dim=1)
+#             src_boxes = src_boxes * scale_fct
+#             track_boxes = track_boxes * scale_fct
+
+#             #Arrange target_mask so that it will have same index with src_mask
+#             target_masks = target_masks[tgt_idx]
+
+            
+#             assert src_masks.shape[-2:] == src_tracking_masks.shape[-2:]
+#             B, N_s, H, W = src_masks.shape
+#             _, N_t, _, _ = src_tracking_masks.shape
+
+#             # Clamp bounding boxes to valid image boundaries
+#             src_boxes_clamped = src_boxes.clone()
+#             src_boxes_clamped[:, 0] = torch.clamp(src_boxes_clamped[:, 0], min=0, max=W-1)  # x1
+#             src_boxes_clamped[:, 1] = torch.clamp(src_boxes_clamped[:, 1], min=0, max=H-1)  # y1
+#             src_boxes_clamped[:, 2] = torch.clamp(src_boxes_clamped[:, 2], min=0, max=W-1)  # x2
+#             src_boxes_clamped[:, 3] = torch.clamp(src_boxes_clamped[:, 3], min=0, max=H-1)  # y2
+
+#             # Clamp bounding boxes to valid image boundaries
+#             track_boxes_clamped = track_boxes.clone()
+#             track_boxes_clamped[:, 0] = torch.clamp(track_boxes_clamped[:, 0], min=0, max=W-1)  # x1
+#             track_boxes_clamped[:, 1] = torch.clamp(track_boxes_clamped[:, 1], min=0, max=H-1)  # y1
+#             track_boxes_clamped[:, 2] = torch.clamp(track_boxes_clamped[:, 2], min=0, max=W-1)  # x2
+#             track_boxes_clamped[:, 3] = torch.clamp(track_boxes_clamped[:, 3], min=0, max=H-1)  # y2
+            
+#             # Convert to integer coordinates
+#             src_boxes_int = src_boxes_clamped.round().long()
+
+#             # Convert to integer coordinates
+#             track_boxes_int = track_boxes_clamped.round().long()
+
+#             # Create binary masks for each bounding box
+#             bbox_masks = torch.zeros_like(src_masks, device=device)
+#             bbox_masks_track = torch.zeros_like(src_tracking_masks, device=device)
+
+#             for j in range(B):
+#                 for i in range(N_s):
+#                     x1, y1, x2, y2 = src_boxes_int[i]
+#                     # Ensure x2 >= x1 and y2 >= y1 (in case of invalid boxes)
+#                     x1, x2 = min(x1, x2), max(x1, x2)
+#                     y1, y2 = min(y1, y2), max(y1, y2)
+                    
+#                     # Set the bounding box region to 1
+#                     bbox_masks[j][i, y1:y2+1, x1:x2+1] = 1.0
+
+            
+#                 for i in range(N_t):
+#                     x1_t, y1_t, x2_t, y2_t = track_boxes_int[i]
+#                     # Ensure x2 >= x1 and y2 >= y1 (in case of invalid boxes)
+#                     x1_t, x2_t = min(x1_t, x2_t), max(x1_t, x2_t)
+#                     y1_t, y2_t = min(y1_t, y2_t), max(y1_t, y2_t)
+
+#                     # Set the bounding box region to 1
+#                     bbox_masks_track[j][i, y1_t:y2_t+1, x1_t:x2_t+1] = 1.0
+            
+#             # Apply the bbox mask to the predicted masks
+#             masked_predictions = src_masks * bbox_masks
+
+#             # Apply the bbox mask to the predicted masks
+#             masked_predictions_track = src_tracking_masks * bbox_masks_track
+
+
+#         outputs_masks = F.interpolate(outputs_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
+#         outputs_masks = (outputs_masks.sigmoid() > self.threshold)
+#         outputs_tracking_masks = F.interpolate(outputs_tracking_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
+#         outputs_tracking_masks = (outputs_tracking_masks.sigmoid() > self.threshold)
+
+#         if bbox_masking:
+#             batch_idx, obj_idx = pred_idx
+#             batch_idx_prev, obj_idx_prev = pred_idx_prev
+            
+#             # Use advanced indexing to assign all at once
+#             # We need to create indices for the masked_predictions tensor
+#             mask_batch_idx = torch.arange(len(batch_idx), device=masked_predictions.device)
+#             mask_batch_idx_prev = torch.arange(len(batch_idx_prev), device=masked_predictions.device)
+            
+#             outputs_masks[batch_idx, obj_idx] = masked_predictions[batch_idx, mask_batch_idx]
+#             outputs_tracking_masks[batch_idx_prev, obj_idx_prev] = masked_predictions_track[batch_idx_prev, mask_batch_idx_prev]
+
+#         #to CPU
+#         outputs_masks = outputs_masks.cpu()
+#         outputs_tracking_masks = outputs_tracking_masks.cpu()
+       
+
+#         for i, (cur_mask, cur_tracking_mask, t, tt) in enumerate(zip(outputs_masks, outputs_tracking_masks, max_target_sizes, orig_target_sizes)):
+#             img_h, img_w = t[0], t[1]
+#             results[i]["masks"] = cur_mask[:, :img_h, :img_w].unsqueeze(1)
+#             results[i]["masks"] = F.interpolate(
+#                 results[i]["masks"].float(), size=tuple(tt.tolist()), mode="nearest"
+#             ).byte()
+
+#             results[i]["track_masks"] = cur_tracking_mask[:, :img_h, :img_w].unsqueeze(1)
+#             results[i]["track_masks"] = F.interpolate(
+#                 results[i]["track_masks"].float(), size=tuple(tt.tolist()), mode="nearest"
+#             ).byte()
+
+#             ##NOTE: Mask boyutları Query x 1 x H x W şeklinde geliyor bunu işlerken squeeze(dim=1) yapmak zorundayız Trackformer gibi. 
+
+#         return results
+
+
+#The verison that all 500 outputs masked with bbox, for the case of there is different count of objects between detection and tracking head and with that this can also work in test set. Bunu hocaylada konuş. Eğer targetlar olsa bile önceki targetları nasıl alacaksın ki pre embed içinde  pre targetları barındırman lazım engine trackdaki yapabilirsin bunu matcher a vererek ama hem uzun iş hemde anlamsız test seti için. Ancak baktık bu test süresini çok uzatiyor o zaman denenebilir.
+#NOTE:  No need for training phase, in training we can filter with boxes only for the correct indexes because in training tracker decoder or detection decoder works, if one is working other is not. But it needs to be checked!!!!!!!!!!!!! please make sure of that so it will not create the problem for the training
+# class PostProcessSegm(nn.Module):
+#     def __init__(self, threshold=0.5):
+#         super().__init__()
+#         self.threshold = threshold
+
+#     @torch.no_grad()
+#     def forward(self, results, outputs, targets, orig_target_sizes, max_target_sizes, pred_idx, tgt_idx, bbox_masking=False):
+#         assert len(orig_target_sizes) == len(max_target_sizes)
+#         max_h, max_w = max_target_sizes.max(0)[0].tolist()
+#         outputs_masks = outputs["pred_masks"].squeeze(2)
+#         outputs_tracking_masks = outputs["tracking_masks"].squeeze(2)#NOTE: squeeze(2) tamamen predde olduğu için ezbere konuldu ne formatına dönüşüyor debugdan bakmak lazım. Bunun bir effecti yok 1 gelirse kaldırıyor bizde torch.Size([1, 500, 94, 167]) noyutlar bu şekilde geliyor.
+
+#         if bbox_masking:
+            
+#             ##NOTE: This can increase time.
+#             outputs_masks = F.interpolate(outputs_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
+#             outputs_masks = (outputs_masks.sigmoid() > self.threshold)
+#             outputs_tracking_masks = F.interpolate(outputs_tracking_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
+#             outputs_tracking_masks = (outputs_tracking_masks.sigmoid() > self.threshold)
+
+#             device = outputs_masks.device
+#             # Get bbox preds
+#             ##NOTE: take all src and src tracking boxes
+#             src_boxes = outputs['pred_boxes']
+#             track_boxes = outputs['tracking_boxes']
+
+#             src_boxes = box_ops.box_cxcywh_to_xyxy(src_boxes)
+#             track_boxes = box_ops.box_cxcywh_to_xyxy(track_boxes)
+#             scale_fct = torch.stack([torch.tensor([max_w], device=device),
+#                                     torch.tensor([max_h], device=device),
+#                                     torch.tensor([max_w], device=device),
+#                                     torch.tensor([max_h], device=device)], dim=1)
+#             src_boxes = src_boxes * scale_fct
+#             track_boxes = track_boxes * scale_fct
+
+#             #Arrange target_mask so that it will have same index with src_mask
+#             #target_masks = target_masks[tgt_idx]
+
+            
+#             assert outputs_masks.shape[-2:] == outputs_tracking_masks.shape[-2:]
+#             B, N_s, H, W = outputs_masks.shape
+#             _, N_t, _, _ = outputs_tracking_masks.shape
+
+#             # Clamp bounding boxes to valid image boundaries
+#             src_boxes_clamped = src_boxes.clone()
+#             src_boxes_clamped[:, 0] = torch.clamp(src_boxes_clamped[:, 0], min=0, max=W-1)  # x1
+#             src_boxes_clamped[:, 1] = torch.clamp(src_boxes_clamped[:, 1], min=0, max=H-1)  # y1
+#             src_boxes_clamped[:, 2] = torch.clamp(src_boxes_clamped[:, 2], min=0, max=W-1)  # x2
+#             src_boxes_clamped[:, 3] = torch.clamp(src_boxes_clamped[:, 3], min=0, max=H-1)  # y2
+
+#             # Clamp bounding boxes to valid image boundaries
+#             track_boxes_clamped = track_boxes.clone()
+#             track_boxes_clamped[:, 0] = torch.clamp(track_boxes_clamped[:, 0], min=0, max=W-1)  # x1
+#             track_boxes_clamped[:, 1] = torch.clamp(track_boxes_clamped[:, 1], min=0, max=H-1)  # y1
+#             track_boxes_clamped[:, 2] = torch.clamp(track_boxes_clamped[:, 2], min=0, max=W-1)  # x2
+#             track_boxes_clamped[:, 3] = torch.clamp(track_boxes_clamped[:, 3], min=0, max=H-1)  # y2
+            
+#             # Convert to integer coordinates
+#             src_boxes_int = src_boxes_clamped.round().long()
+
+#             # Convert to integer coordinates
+#             track_boxes_int = track_boxes_clamped.round().long()
+
+#             # Create binary masks for each bounding box
+#             bbox_masks = torch.zeros_like(outputs_masks, device=device)
+#             bbox_masks_track = torch.zeros_like(outputs_tracking_masks, device=device)
+
+#             for j in range(B):
+#                 for i in range(N_s):
+#                     x1, y1, x2, y2 = src_boxes_int[j][i]
+#                     # Ensure x2 >= x1 and y2 >= y1 (in case of invalid boxes)
+#                     x1, x2 = min(x1, x2), max(x1, x2)
+#                     y1, y2 = min(y1, y2), max(y1, y2)
+                    
+#                     # Set the bounding box region to 1
+#                     bbox_masks[j][i, y1:y2+1, x1:x2+1] = 1.0
+
+            
+#                 for i in range(N_t):
+#                     x1_t, y1_t, x2_t, y2_t = track_boxes_int[j][i]
+#                     # Ensure x2 >= x1 and y2 >= y1 (in case of invalid boxes)
+#                     x1_t, x2_t = min(x1_t, x2_t), max(x1_t, x2_t)
+#                     y1_t, y2_t = min(y1_t, y2_t), max(y1_t, y2_t)
+
+#                     # Set the bounding box region to 1
+#                     bbox_masks_track[j][i, y1_t:y2_t+1, x1_t:x2_t+1] = 1.0
+            
+#             # Apply the bbox mask to the predicted masks
+#             #masked_predictions = src_masks * bbox_masks
+#             outputs_masks = outputs_masks * bbox_masks
+
+#             # Apply the bbox mask to the predicted masks
+#             #masked_predictions_track = src_tracking_masks * bbox_masks_track
+#             outputs_tracking_masks = outputs_tracking_masks * bbox_masks_track
+
+#         else:
+#             outputs_masks = F.interpolate(outputs_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
+#             outputs_masks = (outputs_masks.sigmoid() > self.threshold)
+#             outputs_tracking_masks = F.interpolate(outputs_tracking_masks, size=(max_h, max_w), mode="bilinear", align_corners=False)
+#             outputs_tracking_masks = (outputs_tracking_masks.sigmoid() > self.threshold)
+
+#         # if bbox_masking:
+#         #     batch_idx, obj_idx = pred_idx
+            
+#         #     # Use advanced indexing to assign all at once
+#         #     # We need to create indices for the masked_predictions tensor
+#         #     mask_batch_idx = torch.arange(len(batch_idx), device=masked_predictions.device)
+            
+#         #     outputs_masks[batch_idx, obj_idx] = masked_predictions[batch_idx, mask_batch_idx]
+#         #     outputs_tracking_masks[batch_idx, obj_idx] = masked_predictions_track[batch_idx, mask_batch_idx]
+
+#         #to CPU
+#         outputs_masks = outputs_masks.cpu()
+#         outputs_tracking_masks = outputs_tracking_masks.cpu()
+       
+
+#         for i, (cur_mask, cur_tracking_mask, t, tt) in enumerate(zip(outputs_masks, outputs_tracking_masks, max_target_sizes, orig_target_sizes)):
+#             img_h, img_w = t[0], t[1]
+#             results[i]["masks"] = cur_mask[:, :img_h, :img_w].unsqueeze(1)
+#             results[i]["masks"] = F.interpolate(
+#                 results[i]["masks"].float(), size=tuple(tt.tolist()), mode="nearest"
+#             ).byte()
+
+#             results[i]["track_masks"] = cur_tracking_mask[:, :img_h, :img_w].unsqueeze(1)
+#             results[i]["track_masks"] = F.interpolate(
+#                 results[i]["track_masks"].float(), size=tuple(tt.tolist()), mode="nearest"
+#             ).byte()
+
+#             ##NOTE: Mask boyutları Query x 1 x H x W şeklinde geliyor bunu işlerken squeeze(dim=1) yapmak zorundayız Trackformer gibi.
+
+#         return results
 
 
 class PostProcessPanoptic(nn.Module):

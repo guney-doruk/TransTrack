@@ -22,11 +22,12 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 from .backbone import build_backbone
 from .matcher import build_matcher
-from .seg_head_detr_test import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
+from .seg_head_detr import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer_track import build_deforamble_transformer
 import copy
 from scipy.optimize import linear_sum_assignment
+import time
 
 
 def _get_clones(module, N):
@@ -109,32 +110,80 @@ class DeformableDETR(nn.Module):
             self.transformer.decoder.class_embed = self.class_embed
             for box_embed in self.bbox_embed:
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
+    
+    @torch.no_grad()
+    def randshift(self, samples, targets):
+        bs = samples.tensors.shape[0]
+        
+        self.xshift = (100 * torch.rand(bs)).int()
+        self.xshift *= (torch.randn(bs) > 0.0).int() * 2 - 1 
+        self.yshift = (100 * torch.rand(bs)).int()
+        self.yshift *= (torch.randn(bs) > 0.0).int() * 2 - 1
+        
+        shifted_images = []
+        new_targets = copy.deepcopy(targets)
+        
+        for i, (image, target) in enumerate(zip(samples.tensors, targets)):
+            _, h, w = image.shape
+            img_h, img_w = target['size']
+            nopad_image = image[:, :img_h, :img_w]
+            image_patch = \
+            nopad_image[:,
+                  max(0, -self.yshift[i]) : min(h, h - self.yshift[i]), 
+                  max(0, -self.xshift[i]) : min(w, w - self.xshift[i])] 
+            
+            _, patch_h, patch_w = image_patch.shape
+            ratio_h, ratio_w = img_h / patch_h,  img_w / patch_w 
+            shifted_image = F.interpolate(image_patch[None], size=(img_h, img_w))[0]
+            pad_shifted_image = copy.deepcopy(image)
+            pad_shifted_image[:, :img_h, :img_w] = shifted_image
+            shifted_images.append(pad_shifted_image)
+            
+            scale = torch.tensor([img_w, img_h, img_w, img_h], device=image.device)[None]
+            bboxes = target['boxes'] * scale
+            bboxes -= torch.tensor([max(0, -self.xshift[i]), max(0, -self.yshift[i]), 0, 0], device=image.device)[None]
+            bboxes *= torch.tensor([ratio_w, ratio_h, ratio_w, ratio_h], device=image.device)[None]
+            shifted_bboxes = bboxes / scale
+            new_targets[i]['boxes'] = shifted_bboxes
+                        
+        new_samples = copy.deepcopy(samples)
+        new_samples.tensors = torch.stack(shifted_images, dim=0)
+        
+        return new_samples, new_targets
+            
+    def forward(self, samples_targets, unused_embed=None):
+        if self.training:
+            samples, targets = samples_targets        
+            pre_samples, pre_targets = self.randshift(samples, targets)
+            prepre_samples, _ = self.randshift(samples, targets)
 
-    def forward(self, samples: NestedTensor, pre_embed=None):
-        """ The forward expects a NestedTensor, which consists of:
-               - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
-               - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
-
-            It returns a dict with the following elements:
-               - "pred_logits": the classification logits (including no-object) for all queries.
-                                Shape= [batch_size x num_queries x (num_classes + 1)]
-               - "pred_boxes": The normalized boxes coordinates for all queries, represented as
-                               (center_x, center_y, height, width). These values are normalized in [0, 1],
-                               relative to the size of each individual image (disregarding possible padding).
-                               See PostProcess for information on how to retrieve the unnormalized bounding box.
-               - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
-                                dictionnaries containing the two above keys for each decoder layer.
-        """
-        assert not self.training, 'here is inference mode'
-        assert samples.tensors.shape[0] == 1, 'track only supports batch 1'
+            pre_out, pre_embed = self.forward_once(pre_samples, prepre_samples, pre_targets, targets)             
+            
+            if torch.randn(1).item() > 0.0:
+                out, _ = self.forward_train(samples, pre_embed)     
+            else:
+                for key in pre_embed:
+                    if key != 'feat':
+                        pre_embed[key] = None
+                out, _ = self.forward_train(samples, pre_embed)
+                pre_out = None
+                pre_targets = None
+            return out, pre_out, pre_targets
+        
+        else:
+            samples = samples_targets
+            out, _ = self.forward_train(samples)         
+            return out, None
+    
+    @torch.no_grad()    
+    def forward_once(self, samples: NestedTensor, train_samples: NestedTensor, targets=None, next_targets=None):
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.backbone(samples)
-        
-        if pre_embed is not None:
-            pre_feat = pre_embed['feat']
-        else:
-            pre_feat = features
+
+        if not isinstance(train_samples, NestedTensor):
+            train_samples = nested_tensor_from_tensor_list(train_samples)
+        pre_feat, _ = self.backbone(train_samples)
         
         srcs = []
         masks = []
@@ -145,7 +194,7 @@ class DeformableDETR(nn.Module):
             srcs.append(self.combine(torch.cat([self.input_proj[l](src), self.input_proj[l](src2)], dim=1)))
             masks.append(mask)
             assert mask is not None
-        
+
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
             for l in range(_len_srcs, self.num_feature_levels):
@@ -160,13 +209,100 @@ class DeformableDETR(nn.Module):
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
-        
-        # detection mode         
+            
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, memory = self.transformer(srcs, masks, pos, query_embeds)
-        cur_hs = hs
+
+        outputs_classes = []
+        outputs_coords = []
+        for lvl in range(hs.shape[0]):
+            if lvl == 0:
+                reference = init_reference
+            else:
+                reference = inter_references[lvl - 1]
+            reference = inverse_sigmoid(reference)
+            outputs_class = self.class_embed[lvl](hs[lvl])
+            tmp = self.bbox_embed[lvl](hs[lvl])
+            if reference.shape[-1] == 4:
+                tmp += reference
+            else:
+                assert reference.shape[-1] == 2
+                tmp[..., :2] += reference
+            outputs_coord = tmp.sigmoid()
+            outputs_classes.append(outputs_class)
+            outputs_coords.append(outputs_coord)
+        outputs_class = torch.stack(outputs_classes)
+        outputs_coord = torch.stack(outputs_coords)
+               
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+        pre_embed = {'reference': outputs_coord[-1], 'tgt': hs[-1], 'feat': features, 'memory': memory}
+        
+        if self.aux_loss:
+            out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)        
+        
+        if self.two_stage:
+            enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
+            out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
+        return out, pre_embed
+    
+    def forward_train(self, samples: NestedTensor, pre_embed=None):
+        """ The forward expects a NestedTensor, which consists of:
+               - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
+               - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+            It returns a dict with the following elements:
+               - "pred_logits": the classification logits (including no-object) for all queries.
+                                Shape= [batch_size x num_queries x (num_classes + 1)]
+               - "pred_boxes": The normalized boxes coordinates for all queries, represented as
+                               (center_x, center_y, height, width). These values are normalized in [0, 1],
+                               relative to the size of each individual image (disregarding possible padding).
+                               See PostProcess for information on how to retrieve the unnormalized bounding box.
+               - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
+                                dictionnaries containing the two above keys for each decoder layer.
+        """
+        if not isinstance(samples, NestedTensor):
+            samples = nested_tensor_from_tensor_list(samples)
+        features, pos = self.backbone(samples)
+        
+        if pre_embed is not None:
+            pre_reference, pre_tgt, pre_feat, pre_memory = pre_embed['reference'], pre_embed['tgt'], pre_embed['feat'], pre_embed['memory']
+        else:
+            pre_reference = None
+            pre_tgt = None
+            pre_memory = None
+            pre_feat = features
+        
+        srcs = []
+        masks = []
+        
+        for l, (feat, feat2) in enumerate(zip(features, pre_feat)):
+            src, mask = feat.decompose()
+            src2, _ = feat2.decompose()
+            srcs.append(self.combine(torch.cat([self.input_proj[l](src), self.input_proj[l](src2)], dim=1)))
+            masks.append(mask)
+            assert mask is not None
+
+        if self.num_feature_levels > len(srcs):
+            _len_srcs = len(srcs)
+            for l in range(_len_srcs, self.num_feature_levels):
+                if l == _len_srcs:
+                    src = self.combine(torch.cat([self.input_proj[l](features[-1].tensors), self.input_proj[l](pre_feat[-1].tensors)], dim=1))
+                else:
+                    src = self.input_proj[l](srcs[-1])
+
+                m = samples.mask
+                mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                srcs.append(src)
+                masks.append(mask)
+                pos.append(pos_l)
+            
+        query_embeds = None
+        if not self.two_stage:
+            query_embeds = self.query_embed.weight        
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, _ = self.transformer(srcs, masks, pos, query_embeds, pre_reference, pre_tgt)           
+            
         outputs_classes = []
         outputs_coords = []
         for lvl in range(hs.shape[0]):
@@ -188,54 +324,15 @@ class DeformableDETR(nn.Module):
         outputs_class = torch.stack(outputs_classes)
         outputs_coord = torch.stack(outputs_coords)
         
-        cur_class = outputs_class[-1]
-        cur_box = outputs_coord[-1]
-        cur_reference = cur_box
-        cur_tgt = cur_hs[-1]
-            
-        if pre_embed is not None:
-            # track mode
-            pre_reference, pre_tgt = pre_embed['reference'], pre_embed['tgt']
-                    
-            hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, _ = self.transformer(srcs, masks, pos, query_embeds, pre_reference, pre_tgt, memory)
-            outputs_classes = []
-            outputs_coords = []
-            for lvl in range(hs.shape[0]):
-                if lvl == 0:
-                    reference = init_reference
-                else:
-                    reference = inter_references[lvl - 1]
-                reference = inverse_sigmoid(reference)
-                outputs_class = self.class_embed[lvl](hs[lvl])
-                tmp = self.bbox_embed[lvl](hs[lvl])
-                if reference.shape[-1] == 4:
-                    tmp += reference
-                else:
-                    assert reference.shape[-1] == 2
-                    tmp[..., :2] += reference
-                outputs_coord = tmp.sigmoid()
-                outputs_classes.append(outputs_class)
-                outputs_coords.append(outputs_coord)
-            outputs_class = torch.stack(outputs_classes)
-            outputs_coord = torch.stack(outputs_coords)
-
-            pre_class, pre_box = outputs_class[-1], outputs_coord[-1]
-            
-        else:
-            pre_class, pre_box = cur_class, cur_box
-    
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         
-        out = {'pred_logits': cur_class, 'pred_boxes': cur_box, 'tracking_logits': pre_class, 'tracking_boxes': pre_box}
-        
-        pre_embed = {'reference': cur_reference, 'tgt': cur_tgt, 'feat': features}
-         
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
 
         if self.two_stage and self.training:
             enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
             out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
-        return out, pre_embed
+        return out, None
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -252,7 +349,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25):
+    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, ignored_region_handling=False):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -260,6 +357,7 @@ class SetCriterion(nn.Module):
             weight_dict: dict containing as key the names of the losses and as values their relative weight.
             losses: list of all the losses to be applied. See get_loss for list of available losses.
             focal_alpha: alpha in Focal Loss
+            ignored_region_handling: whether handle ignored regions or not.
         """
         super().__init__()
         self.num_classes = num_classes
@@ -267,19 +365,70 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.losses = losses
         self.focal_alpha = focal_alpha
+        self.ignored_region_handling = ignored_region_handling
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
         assert 'pred_logits' in outputs
+        stime = time.time()
         src_logits = outputs['pred_logits']
 
         idx = self._get_src_permutation_idx(indices)
+        
+        batch_size, num_objects, _ = outputs['pred_boxes'].shape
+
+        
+        if self.ignored_region_handling:
+            unique_idx_range = torch.unique(idx[0])
+            unmatched_idx = {i: list(range(num_objects)) for i in range(batch_size)}
+            for batch in unique_idx_range.tolist():
+                matched_ids = idx[1][idx[0] == batch].tolist()
+                for matched_id in matched_ids:
+                    unmatched_idx[batch].remove(matched_id)
+
+            mask = torch.ones((batch_size, num_objects), dtype=torch.bool, device=src_logits.device)
+
+            # Set indices from idx to False
+            mask[idx] = False
+
+            # Apply mask to src_boxes
+            unmatched_src_boxes = [outputs['pred_boxes'][i][mask[i]] for i in range(batch_size)] #[(419,4), (480,4)] for batchsize 2
+            
+            #Get sizes after transform
+            target_sizes = torch.stack([t["size"] for t in targets], dim=0)
+            assert target_sizes.shape[1] == 2
+            
+            target_masks_ignored = [t["masks_ignore"] for t in targets]
+            batch_ignore = {i: [] for i in range(batch_size)}
+            for i in range(batch_size):
+                if target_masks_ignored[i].shape[0] != 0: #If image has no ignore region, we should pass
+                    converted_boxes = box_ops.box_cxcywh_to_xyxy(unmatched_src_boxes[i])
+                    img_h, img_w = target_sizes[i]
+                    scale_fct = torch.stack([img_w, img_h, img_w, img_h])  # Shape: (4,)
+                    converted_boxes = converted_boxes * scale_fct
+                    unmatched_src_boxes[i] = converted_boxes
+                    #Guard agains overflow for ignored region calculation
+                    unmatched_src_boxes[i][:, 0::2].clamp_(min=0, max=img_w)
+                    unmatched_src_boxes[i][:, 1::2].clamp_(min=0, max=img_h)
+                    
+                    #Getting indexes of %50 or more match with binary mask
+                    idx_for = self.filter_boxes_by_mask_coverage(unmatched_src_boxes[i], target_masks_ignored[i], unmatched_idx, i)
+                    #idx_vec = self.filter_boxes_by_mask_coverage_vectorized(unmatched_src_boxes[i], target_masks_ignored[i])
+                    #idx_for_w = self.filter_boxes_by_mask_coverage_with_where(unmatched_src_boxes[i], target_masks_ignored[i])
+                    #batch_ignore[i] = idx_for
+                    a = 1
+                else:
+                    pass
+        
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
+
+        # for batch, unmatched_ids in batch_ignore.items():
+        #     target_classes[batch, unmatched_ids] = -1
 
         target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
@@ -289,6 +438,7 @@ class SetCriterion(nn.Module):
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
 
+        a = time.time() - stime
         if log:
             # TODO this should probably be a separate loss, not hacked in this one here
             losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
@@ -340,7 +490,7 @@ class SetCriterion(nn.Module):
 
         src_masks = outputs["pred_masks"]
 
-        # TODO use valid to mask invalid areas due to padding in loss
+        # TODO use valid to mask invalid areas due to padding in loss (Önemli olabilir sonuç kötü gelirse bak)
         target_masks, valid = nested_tensor_from_tensor_list([t["masks"] for t in targets]).decompose()
         target_masks = target_masks.to(src_masks)
 
@@ -366,9 +516,119 @@ class SetCriterion(nn.Module):
 
     def _get_tgt_permutation_idx(self, indices):
         # permute targets following indices
-        batch_idx = torch.cat([torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)])
+        batch_idx = torch.cat([torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)]) #Gives the indices belongs to witch batch
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
+   
+    def filter_boxes_by_mask_coverage(self, src_boxes, binary_mask, unmatched_idx, batch, threshold=0.5):
+        # Remove batch dimension from binary_mask (shape: 1, H, W)
+        binary_mask = binary_mask.squeeze(0)  # Shape: (576, 768)
+        
+        # Convert bounding box coordinates to integers before computing areas
+        src_boxes = src_boxes.int() 
+
+        # Compute areas of the bounding boxes
+        box_areas = (src_boxes[:, 2] - src_boxes[:, 0]) * (src_boxes[:, 3] - src_boxes[:, 1])  # (487,)
+        
+
+        # Initialize a list to store valid indices
+        valid_indices = []
+
+        # Iterate over all bounding boxes
+        for idx, (xmin, ymin, xmax, ymax) in enumerate(src_boxes):
+
+            # Extract the region from the binary mask
+            mask_region = binary_mask[ymin:ymax, xmin:xmax]
+
+            # Count the number of True pixels in the mask region
+            mask_count = mask_region.sum().item()
+
+            # Compute the coverage ratio
+            coverage_ratio = mask_count / box_areas[idx]
+
+            # Check if the coverage exceeds the threshold
+            if coverage_ratio > threshold:
+                #valid_indices.append(unmatched_idx[batch][idx])
+                valid_indices.append(idx)
+
+        return torch.tensor(valid_indices, dtype=torch.long, device=src_boxes.device)
+ 
+
+    def filter_boxes_by_mask_coverage_with_where(self, src_boxes, binary_mask, threshold=0.5):
+        binary_mask = binary_mask.squeeze(0)  # Shape: (H, W)
+        src_boxes = src_boxes.int()  # Convert to integer
+
+        xmin, ymin, xmax, ymax = src_boxes[:, 0], src_boxes[:, 1], src_boxes[:, 2], src_boxes[:, 3]
+        box_areas = (xmax - xmin) * (ymax - ymin)  # Compute areas
+
+        height, width = binary_mask.shape
+        y_grid, x_grid = torch.meshgrid(torch.arange(height, device=src_boxes.device),
+                                        torch.arange(width, device=src_boxes.device),
+                                        indexing="ij")
+
+        valid_indices = []
+
+        for idx in range(len(src_boxes)):
+            x_mask = (x_grid >= xmin[idx]) & (x_grid < xmax[idx])
+            y_mask = (y_grid >= ymin[idx]) & (y_grid < ymax[idx])
+
+            # Create a boolean mask for the bounding box
+            box_mask = x_mask & y_mask  # Shape: (H, W)
+
+            # Count overlapping pixels
+            mask_count = (box_mask & binary_mask).sum().item()
+
+            # Compute the coverage ratio
+            coverage_ratio = mask_count / box_areas[idx]
+
+            # Store index if coverage is greater than threshold
+            if coverage_ratio > threshold:
+                valid_indices.append(idx)
+
+        return torch.tensor(valid_indices, dtype=torch.long, device=src_boxes.device)
+
+
+
+    def filter_boxes_by_mask_coverage_vectorized(self, src_boxes, binary_mask, threshold=0.5):
+        # Remove batch dimension from binary_mask (shape: 1, H, W)
+        binary_mask = binary_mask.squeeze(0)  # Shape: (576, 768)
+
+        # Ensure bounding box coordinates are in integer format
+        src_boxes = src_boxes.int()
+
+        # Extract box coordinates
+        xmin, ymin, xmax, ymax = src_boxes[:, 0], src_boxes[:, 1], src_boxes[:, 2], src_boxes[:, 3]
+
+        # Compute bounding box areas
+        box_areas = (xmax - xmin) * (ymax - ymin)  # Shape: (487,)
+
+        # Create a coordinate grid for all pixels
+        height, width = binary_mask.shape  # (576, 768)
+        y_grid, x_grid = torch.meshgrid(torch.arange(height, device=src_boxes.device),
+                                        torch.arange(width, device=src_boxes.device),
+                                        indexing="ij")
+
+        # Expand coordinates to shape (487, H, W) for broadcasting
+        x_grid = x_grid.unsqueeze(0)  # Shape: (1, H, W)
+        y_grid = y_grid.unsqueeze(0)  # Shape: (1, H, W)
+
+        # Create masks for each bounding box
+        inside_x = (x_grid >= xmin[:, None, None]) & (x_grid < xmax[:, None, None])
+        inside_y = (y_grid >= ymin[:, None, None]) & (y_grid < ymax[:, None, None])
+
+        # Get the full bounding box mask: shape (487, H, W)
+        box_masks = inside_x & inside_y
+
+        # Count number of True pixels inside each bounding box
+        mask_pixels_in_box = (box_masks & binary_mask).sum(dim=(1, 2))
+
+        # Compute the coverage ratio
+        coverage_ratios = mask_pixels_in_box / box_areas
+
+        # Select indices where coverage exceeds the threshold
+        selected_indices = torch.where(coverage_ratios > threshold)[0]
+
+        return selected_indices
 
     def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
         loss_map = {
@@ -380,17 +640,27 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, pre_outputs=None, pre_targets=None):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
+#         if pre_outputs is None:
+#             outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+#             # Retrieve the matching between the outputs of the last layer and the targets
+#             indices = self.matcher(outputs_without_aux, targets)
+#         else:
+#             outputs_without_aux = {k: v for k, v in pre_outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+#             # Retrieve the matching between the outputs of the last layer and the targets
+#             indices = self.matcher(outputs_without_aux, pre_targets)
+        
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
-
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
+            
+#         pre_indices = indices
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
@@ -408,7 +678,12 @@ class SetCriterion(nn.Module):
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
+#                 if pre_outputs is not None:
+#                     indices = pre_indices
+#                 else:
+#                     indices = self.matcher(aux_outputs, targets)
                 indices = self.matcher(aux_outputs, targets)
+
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -455,13 +730,12 @@ class PostProcess(nn.Module):
                           For visualization, this should be the image size after data augment, but before padding
         """
         out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
-        track_logits, track_bbox = outputs['tracking_logits'], outputs['tracking_boxes']
-        
+
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
         prob = out_logits.sigmoid()
-        track_prob = track_logits.sigmoid()
+        
 #         topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
 #         scores = topk_values
 #         topk_boxes = topk_indexes // out_logits.shape[2]
@@ -473,18 +747,12 @@ class PostProcess(nn.Module):
         labels = labels + 1
         boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
 
-        track_scores, track_labels = track_prob[..., 1:2].max(-1)
-        track_labels = track_labels + 1
-        track_boxes = box_ops.box_cxcywh_to_xyxy(track_bbox)
-        
         # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = target_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
         boxes = boxes * scale_fct[:, None, :]
-        track_boxes = track_boxes * scale_fct[:, None, :]
 
-        results = [{'scores': s, 'labels': l, 'boxes': b, 'track_scores': ts, 'track_labels': tl, 'track_boxes': tb} 
-                   for s, l, b, ts, tl, tb in zip(scores, labels, boxes, track_scores, track_labels, track_boxes)]
+        results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
 
         return results
 
@@ -506,11 +774,13 @@ class MLP(nn.Module):
 
 def build(args):
     if args.dataset_file == 'coco':
-        num_classes = 91
+        num_classes = 20
     elif args.dataset_file == 'mot':
         num_classes = 20
     elif args.dataset_file == "coco_panoptic":
         num_classes = 250
+    elif args.dataset_file == "burst":
+        num_classes = 20 ##NOTE: max label id + 1 can work to
     else:
         num_classes = 20 
     device = torch.device(args.device)
@@ -528,8 +798,9 @@ def build(args):
         with_box_refine=args.with_box_refine,
         two_stage=args.two_stage,
     )
-    if args.masks: # NOTE: args.mask sadece segmentation headli modeli bbox evaluationuna koymak için kullanılıyor.
-        model = DETRsegm(model, output_masks= args.mask, freeze_detr=(args.frozen_weights is not None))
+    if args.masks:
+        model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
+        #model = DETRsegm(model, freeze_detr=True) #NOTE for continue on training
     matcher = build_matcher(args)
     weight_dict = {'loss_ce': args.cls_loss_coef, 'loss_bbox': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
@@ -548,13 +819,13 @@ def build(args):
     if args.masks:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
-    criterion = SetCriterion(num_classes, matcher, weight_dict, losses, focal_alpha=args.focal_alpha)
+    criterion = SetCriterion(num_classes, matcher, weight_dict, losses, focal_alpha=args.focal_alpha, ignored_region_handling=args.ignored_region_handling)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
-    if args.masks and args.mask:#2. argumanı kaldır sonra
+    if args.masks:
         postprocessors['segm'] = PostProcessSegm()
         if args.dataset_file == "coco_panoptic":
             is_thing_map = {i: i <= 90 for i in range(201)}
             postprocessors["panoptic"] = PostProcessPanoptic(is_thing_map, threshold=0.85)
 
-    return model, criterion, postprocessors, matcher
+    return model, criterion, postprocessors, matcher #Matcher Added

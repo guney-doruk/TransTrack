@@ -23,7 +23,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 from .backbone import build_backbone
 from .matcher import build_matcher
-from .seg_head_detr import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
+from .seg_head_detr_backbone import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer_track import build_deforamble_transformer
 import copy
@@ -58,11 +58,12 @@ class DeformableDETR(nn.Module):
         self.num_feature_levels = num_feature_levels
         if not two_stage:
             self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
+        num_channels = backbone.num_channels[-3:]
         if num_feature_levels > 1:
-            num_backbone_outs = len(backbone.strides)
+            num_backbone_outs = len(backbone.strides) - 1
             input_proj_list = []
             for _ in range(num_backbone_outs):
-                in_channels = backbone.num_channels[_]
+                in_channels = num_channels[_] 
                 input_proj_list.append(nn.Sequential(
                     nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
                     nn.GroupNorm(32, hidden_dim),
@@ -75,7 +76,7 @@ class DeformableDETR(nn.Module):
                 in_channels = hidden_dim
             self.input_proj = nn.ModuleList(input_proj_list)
         else:
-            self.input_proj = nn.ModuleList([nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1)])
+            self.input_proj = nn.ModuleList([nn.Conv2d(num_channels[0], hidden_dim, kernel_size=1)])
         self.combine = nn.Conv2d(hidden_dim * 2, hidden_dim, kernel_size=1)
 
         self.backbone = backbone
@@ -180,10 +181,17 @@ class DeformableDETR(nn.Module):
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.backbone(samples)
+        features_all = features
+        features = features[-3:]
+        
+        pos_all = pos
+        pos = pos[-3:]
 
         if not isinstance(train_samples, NestedTensor):
             train_samples = nested_tensor_from_tensor_list(train_samples)
         pre_feat, _ = self.backbone(train_samples)
+        pre_feat_all = pre_feat
+        pre_feat = pre_feat[-3:]
         
         srcs = []
         masks = []

@@ -1,7 +1,7 @@
 import json
 from matplotlib import pyplot as plt
 
-BASE_PATH = "/cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_halftrain_halfval"
+BASE_PATH = "/cta/users/grad4/master/TransTrack/output/finetune/mots_train_no_ignore_from_cocopersonv2_100thepoch_halftrain_halfval_with_uncertainityV2_torchzeros"
 
 class File:
     def __init__(self) -> None:
@@ -34,9 +34,10 @@ class Graph:
         plt.ylabel('Train Loss')
         plt.title('Train Loss Graph')
         plt.savefig(BASE_PATH + f'/loss_plots/train_loss{name}.png')
+        #plt.savefig(BASE_PATH + f'/loss_plots/train_loss{name}.png')
 
 if __name__ == '__main__':
     input_path = BASE_PATH + '/log.txt'
-    epochs, train_loss = File.parse_txt(path=input_path, loss_type="train_loss")
-    Graph.save_loss_image(epochs=epochs, loss=train_loss, name= "")
+    epochs, train_loss = File.parse_txt(path=input_path, loss_type="train_log_var_segmentation")
+    Graph.save_loss_image(epochs=epochs, loss=train_loss, name= "_log_var_segmentation")
     

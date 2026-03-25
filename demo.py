@@ -18,6 +18,7 @@ import cv2
 from models import build_tracktest_model
 from models import Tracker
 import datasets.transforms as T
+from models.tracker_mask_box_iou import EnhancedTracker
 from util.misc import nested_tensor_from_tensor_list
 from track_tools.colormap import colormap
 
@@ -173,6 +174,7 @@ def main(args):
     model.to(device)
     model.eval()
     tracker = Tracker(score_thresh=args.track_thresh)
+    # tracker = EnhancedTracker(score_thresh=args.track_thresh)
 
     checkpoint = torch.load(args.resume, map_location='cpu')
     _, _ = model.load_state_dict(checkpoint['model'], strict=False)

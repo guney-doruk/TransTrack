@@ -37,7 +37,7 @@ class DETRsegm(nn.Module):
         hidden_dim, nheads = deform_detr.transformer.d_model, deform_detr.transformer.nhead
         self.bbox_attention = MHAttentionMap(hidden_dim, hidden_dim, nheads, dropout=0.0)
         ##TODO: below dimensions arranged for out transtrack hwoever it can be converted to original dimensions by changing the backbone. But changing backbone prevents to use of pretraained transtrack models.
-        self.mask_head = MaskHeadSmallConv(hidden_dim + nheads, [2048, 1024, 512], hidden_dim)
+        self.mask_head = MaskHeadSmallConv(hidden_dim + nheads, [1024, 512, 256], hidden_dim)
     
     def forward(self, samples_targets, unused_embed=None):
         if self.training:
@@ -69,10 +69,17 @@ class DETRsegm(nn.Module):
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.deform_detr.backbone(samples)
+        features_all = features
+        features = features[-3:]
+
+        pos_all = pos
+        pos = pos[-3:]
 
         if not isinstance(train_samples, NestedTensor):
             train_samples = nested_tensor_from_tensor_list(train_samples)
         pre_feat, _ = self.deform_detr.backbone(train_samples)
+        pre_feat_all = pre_feat
+        pre_feat = pre_feat[-3:]
         
         srcs = []
         masks = []
@@ -153,6 +160,12 @@ class DETRsegm(nn.Module):
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.deform_detr.backbone(samples)
+
+        features_all = features
+        features = features[-3:]
+
+        pos_all = pos
+        pos = pos[-3:]
         
         if pre_embed is not None:
             pre_reference, pre_tgt, pre_feat, pre_memory = pre_embed['reference'], pre_embed['tgt'], pre_embed['feat'], pre_embed['memory']
@@ -236,7 +249,10 @@ class DETRsegm(nn.Module):
 
         ##TODO: Check with trackformer to get correct shape of memory, mask, src. Mask and Src should have same shape.
         memory = memory_slices[-2] #NOTE:  memory_slices[-2].shape = [1,256,19,29]. Aynı boyutta bir resmin detr tarafında memory karşılığı boyut olarak yine [1,256,19,29]. Şuanki hali bir tık büyüğü. Aşağıdakilerden -2 yi alırsak dimension detr la ortusuyor.
-        mask = masks[-2] ##NOTE: Burada alınan maskenin Trackformerla aynı boyuta sahip olması ve F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0] işleminden geçmiş olması gerekli.
+        mask = masks[-2] ##NOTE: Burada alınan maskenin Trackformerla aynı boyuta sahip olması ve F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0] işleminden geçmiş olması gerekli. Bizim şuana akdar oldığımzı sonuçlarda geçmemiş oluyor.
+        ##NOTE: Şuana kadar aşağıdaki operasyon sadece son yani 4. maske için yapılıyor(son 2048 dimensionlu kısım) ankca trackformer bunu seg headine girecek maske içinde yapmış bu nedenle bizimde yapmamız lazım. 3.01.2026 tarine kadar olan hiç bir eğitimde bu olmadı
+        ##NOTE hedefin boyutu girdi boyutuyla aynıysa mevcut durumda maskenin değeri değişmez. nearest olduğu sürece defaut ta nearest. Bunu debug sırasında kontrol et.
+        #mask = F.interpolate(mask[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
         src = srcs[-2] # Biz sonuna bir tane daha eklediğimiz için src -3 den almak trackformerda src, mask = features[-2].decompose() işlemine denk geliyor. Ancak src, mask = features[-2].decompose() features in leng inin 4 mü 3 mü olduğuna bakılması gerekli
         # memory = memory_slices[-1]
         # features = [NestedTensor(memory_slide) for memory_slide in memory_slices]        
@@ -246,7 +262,7 @@ class DETRsegm(nn.Module):
 
         ##TODO: Memory nin liste gelmesi durumunu handle et. mask yapısını level bilgisine göre düzenle.
         bbox_mask = self.bbox_attention(hs[-1], memory, mask=mask)##NOTE: hs liste mi bak
-        seg_masks = self.mask_head(src, bbox_mask, [features[2].tensors, features[1].tensors, features[0].tensors])##NOTE: bizde gelen boyutlar: 2048,19,29 and 1024,38,57 and 512,76,114 DETR gelen boyutlar: 1024,38,57 and 512,76,144 and 256,152,228 detr da 4 elemanlı snonuncu elemanı 2048 li hali.
+        seg_masks = self.mask_head(src, bbox_mask, [features_all[-2].tensors, features_all[-3].tensors, features_all[-4].tensors])##NOTE: bizde gelen boyutlar: 2048,19,29 and 1024,38,57 and 512,76,114 DETR gelen boyutlar: 1024,38,57 and 512,76,144 and 256,152,228 detr da 4 elemanlı snonuncu elemanı 2048 li hali.
         
         outputs_seg_masks = seg_masks.view(bs, self.deform_detr.num_queries, seg_masks.shape[-2], seg_masks.shape[-1])
 
@@ -328,50 +344,60 @@ class MaskHeadSmallConv(nn.Module):
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_uniform_(m.weight, a=1)
                 nn.init.constant_(m.bias, 0)
+                
+    def forward(self, x: Tensor, bbox_mask: Tensor, fpns: List[Tensor], chunk_size: int = 50):
+        B, C, H, W = x.shape
+        B2, Q, nheads, H2, W2 = bbox_mask.shape
+        assert B == B2 and H == H2 and W == W2
 
-    def forward(self, x: Tensor, bbox_mask: Tensor, fpns: List[Tensor]):
-        # Concatenate x and bbox_mask; bbox_mask has been detached
-        x = torch.cat([_expand(x, bbox_mask.shape[1]), bbox_mask.flatten(0, 1)], 1)#NOTE: Burada paperdaki boyutun dışına çıkılıyor asıl boyut paperdaki boyut bunu konuşmak gerekli ve torch.Size([500, 264, 40, 60]) bu boyutun anlamlandırılmaıs gerekli
+        # FPN adaptörleri (batch = B)
+        f0 = self.adapter1(fpns[0])
+        f1 = self.adapter2(fpns[1])
+        f2 = self.adapter3(fpns[2])
 
-        #x = torch.cat([x.unsqueeze(1).repeat(1, int(bbox_mask.shape[1]), 1, 1, 1).flatten(0,1), bbox_mask.flatten(0, 1)], 1)
-        
-        # Process through layers
-        x = self.lay1(x)
-        x = self.gn1(x)
-        x = F.relu(x)
-        x = self.lay2(x)
-        x = self.gn2(x)
-        x = F.relu(x)
+        outs = []
 
-        cur_fpn = self.adapter1(fpns[0])
-        if cur_fpn.size(0) != x.size(0):
-            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
-        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
-        x = self.lay3(x)
-        x = self.gn3(x)
-        x = F.relu(x)
+        for qs in range(0, Q, chunk_size):
+            qe = min(qs + chunk_size, Q)
+            qlen = qe - qs
 
-        cur_fpn = self.adapter2(fpns[1])
-        if cur_fpn.size(0) != x.size(0):
-            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
-        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
-        x = self.lay4(x)
-        x = self.gn4(x)
-        x = F.relu(x)
+            # [B, qlen, nheads, H, W] -> [B*qlen, nheads, H, W]
+            bm = bbox_mask[:, qs:qe].flatten(0, 1)
 
-        cur_fpn = self.adapter3(fpns[2])
-        if cur_fpn.size(0) != x.size(0):
-            cur_fpn = _expand(cur_fpn, x.size(0) // cur_fpn.size(0))
-        x = cur_fpn + F.interpolate(x, size=cur_fpn.shape[-2:], mode="nearest")
-        x = self.lay5(x)
-        x = self.gn5(x)
-        x = F.relu(x)
+            # [B, C, H, W] -> [B*qlen, C, H, W]
+            xx = _expand(x, qlen)
 
-        x = self.out_lay(x)
+            z = torch.cat([xx, bm], dim=1)
 
-        return x
+            # conv stack
+            z = F.relu(self.gn1(self.lay1(z)))
+            z = F.relu(self.gn2(self.lay2(z)))
 
+            # ---------- FPN level 1 ----------
+            cur_fpn = f0
+            if cur_fpn.size(0) != z.size(0):
+                cur_fpn = _expand(cur_fpn, z.size(0) // cur_fpn.size(0))
+            z = cur_fpn + F.interpolate(z, size=cur_fpn.shape[-2:], mode="nearest")
+            z = F.relu(self.gn3(self.lay3(z)))
 
+            # ---------- FPN level 2 ----------
+            cur_fpn = f1
+            if cur_fpn.size(0) != z.size(0):
+                cur_fpn = _expand(cur_fpn, z.size(0) // cur_fpn.size(0))
+            z = cur_fpn + F.interpolate(z, size=cur_fpn.shape[-2:], mode="nearest")
+            z = F.relu(self.gn4(self.lay4(z)))
+
+            # ---------- FPN level 3 ----------
+            cur_fpn = f2
+            if cur_fpn.size(0) != z.size(0):
+                cur_fpn = _expand(cur_fpn, z.size(0) // cur_fpn.size(0))
+            z = cur_fpn + F.interpolate(z, size=cur_fpn.shape[-2:], mode="nearest")
+            z = F.relu(self.gn5(self.lay5(z)))
+
+            z = self.out_lay(z)
+            outs.append(z)
+
+        return torch.cat(outs, dim=0)
 
 class MHAttentionMap(nn.Module):
     """This is a 2D attention module, which only returns the attention softmax (no multiplication by value)"""
@@ -675,3 +701,5 @@ class PostProcessPanoptic(nn.Module):
                 predictions = {"png_string": out.getvalue(), "segments_info": segments_info}
             preds.append(predictions)
         return preds
+    
+    #DİMENSIONLARIN DUZELDIPI HLI
