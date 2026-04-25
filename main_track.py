@@ -112,6 +112,10 @@ def get_args_parser():
     parser.add_argument('--set_cost_giou', default=2, type=float,
                         help="giou box coefficient in the matching cost")
     
+    # * Metric related
+    ##NOTE: 6 nisan 2026 da eklenmiştir bu nedenle bundan önceki yapılan experimentlarda eğer sadece box üzerinden sonuç alınıyorsa bu kullanılmış gibi düşünülmelidir. Şuan sadece parametrik hale getirdim.
+    parser.add_argument('--infer_masks_without_gt', default=True, action='store_true',
+                        help="allows to output segmentation masks with a dataset that has no seg annotation at inference")
 
     # * Loss coefficients
     parser.add_argument('--mask_loss_coef', default=2, type=float)
@@ -357,8 +361,8 @@ def main(args):
         # tracker = Tracker(score_thresh=args.track_thresh)
         tracker = EnhancedTracker(score_thresh=args.track_thresh, bbox_weight=args.box_weight, mask_weight=args.mask_weight, unmatch_threshold=args.unmatch_threshold, use_box_small=args.use_box_small, use_scaled_factor=args.use_scaled_factor)
         test_stats, coco_evaluator, res_tracks = evaluate(model, criterion, postprocessors, matcher, data_loader_val,
-                                                          base_ds, device, args.output_dir, masks= args.masks, mask_out= args.mask_out, tracker=tracker, 
-                                                          phase='eval', det_val=args.det_val, fp16=args.fp16, bbox_masking=args.bbox_masking)
+                                                          base_ds, device, args.output_dir, masks= args.masks, mask=args.mask, mask_out= args.mask_out, tracker=tracker, 
+                                                          phase='eval', det_val=args.det_val, fp16=args.fp16, bbox_masking=args.bbox_masking, infer_masks_without_gt=args.infer_masks_without_gt)
         
         if args.output_dir:
 #             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
@@ -424,7 +428,7 @@ def main(args):
         # if epoch % 10 == 0 or epoch > args.epochs - 5:
         if (epoch + 1) % 10 == 0 or epoch > args.epochs - 5 or epoch == 0:
             test_stats, coco_evaluator, _= evaluate(
-                model, criterion, postprocessors, matcher, data_loader_val, base_ds, device, args.output_dir, args.masks, args.mask_out, fp16=args.fp16, bbox_masking=args.bbox_masking
+                model, criterion, postprocessors, matcher, data_loader_val, base_ds, device, args.output_dir, args.masks, args.mask_out, fp16=args.fp16, bbox_masking=args.bbox_masking, infer_masks_without_gt=args.infer_masks_without_gt
             )
             log_test_stats = {**{f'test_{k}': v for k, v in test_stats.items()}}
             log_stats.update(log_test_stats)

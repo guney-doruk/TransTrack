@@ -254,15 +254,24 @@ def build(image_set, args):
     root = Path(args.coco_path)
     assert root.exists(), f'provided MOT path {root} does not exist'
     mode = 'instances'
+    #MOT17
+    # PATHS = {
+    #     "train": (root / "train", root / "annotations" / 'train_half.json'),
+    #     "val": (root / "train", root / "annotations" / 'val_half.json'),
+    #     "test": (root / "test", root / "annotations" / 'test.json'),
+    #     "trainall": (root / "train", root / "annotations" / 'train.json'),
+
+    # }
+    #MOT15
     PATHS = {
         "train": (root / "train", root / "annotations" / 'train_half.json'),
-        "val": (root / "train", root / "annotations" / 'val_half.json'),
+        "val": (root / "train", root / "annotations" / 'train.json'),#For taking all train images
         "test": (root / "test", root / "annotations" / 'test.json'),
         "trainall": (root / "train", root / "annotations" / 'train.json'),
 
     }
 
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoDetection(img_folder, ann_file, transforms=make_mot_transforms(image_set, args), return_masks=args.masks,
+    dataset = CocoDetection(img_folder, ann_file, transforms=make_mot_transforms(image_set, args), return_masks=False,
                             cache_mode=args.cache_mode, local_rank=get_local_rank(), local_size=get_local_size())
     return dataset

@@ -267,7 +267,7 @@ def mask2bbox(pred_masks, pred_boxes, mask_bboxes, scores, threshold, track=Fals
 #Pazartesi burayı kontrol et ve kaldığın yerden tracker algosuna devam et burası doğru gelıyorsa tracker algosuna yoğunlaş sadece buraların yani oncesının dopru gelmesi zorunlu Bugun baya baktım bruası doğru ama kendime gıvenemıyorum.
 #Uygarla bastırın anca öyle anlaşılacak.
 
-def mean_iou_func(outputs, targets, prev_targets, matcher, mask_out=False, threshold=0.5):
+def mean_iou_func(outputs, targets, prev_targets, matcher, mask_out=False, threshold=0.5, return_only_idxs=False):
     ##NOTE: Calculate MeanIOU start
     ##NOTE: Works only if batchsize is 1. For the test batchsize is always 1. For the train we need to make it 1 to not get out of memory error.
     
@@ -289,6 +289,9 @@ def mean_iou_func(outputs, targets, prev_targets, matcher, mask_out=False, thres
     indices = matcher(outputs_without_aux, targets)
     pred_idx = _get_src_permutation_idx(indices)
     tgt_idx = _get_tgt_permutation_idx(indices)
+
+    if return_only_idxs:
+        return None , pred_idx, tgt_idx
 
     ##NOTE: Burası test sırasında bbox masking için tracking decoderinde ayrı matcherdan doğru indexlerin gelmesi için tanımlanmıştı. Bu yüzden commented out
     #Get the previous idx

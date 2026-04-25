@@ -184,8 +184,8 @@ def train_one_epoch_uncertainty_loss(model: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, matcher, data_loader, base_ds, device, output_dir, masks, mask_out, tracker=None, 
-             phase='train', det_val=False, fp16=False, bbox_masking=False):
+def evaluate(model, criterion, postprocessors, matcher, data_loader, base_ds, device, output_dir, masks, mask, mask_out, tracker=None, 
+             phase='train', det_val=False, fp16=False, bbox_masking=False, infer_masks_without_gt=False):
     tensor_type = torch.cuda.HalfTensor if fp16 else torch.cuda.FloatTensor
     model.eval()
 #     criterion.eval()
@@ -194,7 +194,7 @@ def evaluate(model, criterion, postprocessors, matcher, data_loader, base_ds, de
 #     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     header = 'Test:'
 
-    iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
+    iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys()) if not infer_masks_without_gt else tuple(k for k in ('bbox',) if k in postprocessors.keys())
     coco_evaluator = CocoEvaluator(base_ds, iou_types)
     # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
 
@@ -260,10 +260,13 @@ def evaluate(model, criterion, postprocessors, matcher, data_loader, base_ds, de
 #                              **loss_dict_reduced_unscaled)
 #         metric_logger.update(class_error=loss_dict_reduced['class_error'])
         
-        if masks:
+        if masks and mask and not infer_masks_without_gt:
             ious, pred_idx, tgt_idx = mean_iou_func(outputs, targets, prev_targets, matcher, mask_out)
             total_iou += ious.sum().item()
             total_objects += ious.numel()
+        else:
+            _, pred_idx, tgt_idx = mean_iou_func(outputs, targets, prev_targets, matcher, mask_out, return_only_idxs=True)
+
         
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
         results = postprocessors['bbox'](outputs, orig_target_sizes)
@@ -300,7 +303,7 @@ def evaluate(model, criterion, postprocessors, matcher, data_loader, base_ds, de
 
     # ##NOTE: Mean IoU last step
     # ##TODO: Find a way to display at the end of the validation and test.
-    if masks:
+    if masks and mask and not infer_masks_without_gt:
         mean_iou = total_iou / total_objects
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -329,7 +332,7 @@ def evaluate(model, criterion, postprocessors, matcher, data_loader, base_ds, de
     if coco_evaluator is not None:
         if 'bbox' in postprocessors.keys():
             stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
-        if 'segm' in postprocessors.keys():
+        if 'segm' in postprocessors.keys() and not infer_masks_without_gt:
             stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
     if panoptic_res is not None:
         stats['PQ_all'] = panoptic_res["All"]

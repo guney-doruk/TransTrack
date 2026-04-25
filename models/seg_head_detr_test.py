@@ -566,7 +566,7 @@ class PostProcessSegm(nn.Module):
         self.threshold = threshold
 
     @torch.no_grad()
-    def forward(self, results, outputs, targets, orig_target_sizes, max_target_sizes, pred_idx, tgt_idx, bbox_masking=False):
+    def forward(self, results, outputs, targets, orig_target_sizes, max_target_sizes, pred_idx=None, tgt_idx=None, bbox_masking=False):
         assert len(orig_target_sizes) == len(max_target_sizes)
         max_h, max_w = max_target_sizes.max(0)[0].tolist()
         outputs_masks = outputs["pred_masks"].squeeze(2)
